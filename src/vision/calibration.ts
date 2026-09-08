@@ -152,6 +152,7 @@ function normalizedFeatures(
   ).map((j) => (features[j] - model.means[j]) / model.scales[j]);
 }
 
+/** Raw model output. Clipping here would hide overshoot during validation and CV. */
 function predictUnchecked(model: CalibrationModel, features: number[]): Point {
   const normalized = normalizedFeatures(model, features);
   const row =
@@ -169,7 +170,7 @@ function predictUnchecked(model: CalibrationModel, features: number[]): Point {
     throw new Error(
       "Calibration prediction was not finite. Recalibrate before control.",
     );
-  return { x: clamp(x), y: clamp(y) };
+  return { x, y };
 }
 
 /** Gaussian elimination with pivoting. Ridge keeps the feature matrix nonsingular. */
@@ -481,7 +482,9 @@ export function predictCalibration(
     !boundedVector(features, model.featureCount)
   )
     throw new Error("Calibration features do not match this profile.");
-  return predictUnchecked(model, features);
+  const point = predictUnchecked(model, features);
+  // Screen-control consumers keep bounded coordinates; scoring uses raw output.
+  return { x: clamp(point.x), y: clamp(point.y) };
 }
 
 /** A 0.15 error means 15% of a viewport side, not 85% tracking accuracy. */
@@ -518,7 +521,9 @@ export function validateCalibration(
       target.y > 1
     )
       throw new Error("Invalid validation target.");
-    const predicted = predictCalibration(model, features);
+    if (!boundedVector(features, model.featureCount))
+      throw new Error("Calibration features do not match this profile.");
+    const predicted = predictUnchecked(model, features);
     return {
       target,
       predicted,

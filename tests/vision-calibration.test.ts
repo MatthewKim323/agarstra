@@ -303,6 +303,73 @@ describe("robust calibration regressions", () => {
     expect(validation.failureReason).toBe("tail-error");
   });
 
+  it("does not hide rare severe overshoot behind a clipped validation average", () => {
+    // Regression: clipping four bad frames used to report 0.012 and pass,
+    // although their actual prediction error makes the mean exceed four viewports.
+    const samples = Array.from({ length: 100 }, (_, index) => ({
+      features: index < 4 ? [-100, 0.3] : [0.3, 0.3],
+      target: { x: 0.3, y: 0.3 },
+    }));
+    const validation = validateCalibration(legacyIdentity, samples);
+    expect(validation.meanError).toBeCloseTo(4.012, 10);
+    expect(validation.p95Error).toBe(0);
+    expect(validation.maxError).toBeCloseTo(100.3, 10);
+    expect(validation.passed).toBe(false);
+    expect(validation.failureReason).toBe("mean-error");
+    expect(validation.targets[0].predicted.x).toBeLessThan(0);
+    // The public screen-control API retains its backwards-compatible bounds.
+    expect(predictCalibration(legacyIdentity, [-100, 0.3])).toEqual({
+      x: 0,
+      y: 0.3,
+    });
+  });
+
+  it("reports unmodified overshoot in target bias, dispersion, and tail error", () => {
+    const validation = validateCalibration(
+      legacyIdentity,
+      [-0.5, 0, 1.5].map((x) => ({
+        features: [x, 0.5],
+        target: { x: 0.5, y: 0.5 },
+      })),
+    );
+    expect(validation.p95Error).toBe(1);
+    expect(validation.maxError).toBe(1);
+    expect(validation.targets[0].predicted.x).toBeCloseTo(1 / 3);
+    expect(validation.targets[0].bias.x).toBeCloseTo(-1 / 6);
+    expect(validation.targets[0].dispersion).toBeCloseTo(Math.sqrt(13 / 18));
+    expect(validation.passed).toBe(false);
+  });
+
+  it("scores whole-target cross-validation before applying screen clipping", () => {
+    const extrapolation = training.map(({ target }) => ({
+      target: { ...target },
+      features: [target.x, target.y],
+    }));
+    // An isolated extreme feature makes some omitted-target predictions overshoot.
+    extrapolation[8].features[0] = 100;
+    const model = fitCalibration(extrapolation);
+    expect(
+      model.trainingDiagnostics?.candidates.some(
+        (candidate) =>
+          candidate.maxTargetError !== null && candidate.maxTargetError > 10,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects invalid raw validation features before prediction", () => {
+    for (const features of [[NaN, 0.5], [Infinity, 0.5], [0.5], [1e7, 0.5]]) {
+      expect(() =>
+        validateCalibration(
+          legacyIdentity,
+          Array.from({ length: 3 }, () => ({
+            features,
+            target: { x: 0.5, y: 0.5 },
+          })),
+        ),
+      ).toThrow(/match/);
+    }
+  });
+
   it("distinguishes a stable offset from a shaky target", () => {
     const stable = [0, 1, 2].map(() => ({
       features: [0.7, 0.5],
