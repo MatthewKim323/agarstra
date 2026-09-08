@@ -1,0 +1,42 @@
+{
+  "name": "nerve",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n bridge,app \"tsx watch server/index.ts\" \"vite --host 127.0.0.1 --port 4317\"",
+    "build": "tsc --noEmit && vite build",
+    "start": "node scripts/start.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "check": "npm test && npm run build && npm run test:e2e && npm audit --audit-level=high",
+    "format": "prettier --write src shared server tests docs scripts *.json *.ts index.html README.md .github/workflows/test.yml",
+    "setup": "playwright install chromium && node scripts/setup-vision.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/dm-sans": "^5.3.0",
+    "@fontsource-variable/manrope": "^5.3.0",
+    "@mediapipe/tasks-vision": "0.10.32",
+    "express": "5.1.0",
+    "lucide-react": "0.468.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "1.63.0",
+    "@types/express": "5.0.3",
+    "@types/node": "24.3.0",
+    "@types/react": "19.1.12",
+    "@types/react-dom": "19.1.9",
+    "@vitejs/plugin-react": "5.0.2",
+    "concurrently": "9.2.4",
+    "prettier": "^3.6.2",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vite": "7.3.6",
+    "vitest": "3.2.7"
+  }
+}

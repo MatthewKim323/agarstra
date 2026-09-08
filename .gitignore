@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+playwright-report/
+test-results/
+.nerve/
+public/vision/
+.gstack/
+.DS_Store
+*.log
+coverage/
