@@ -140,31 +140,47 @@ test("a brief blink keeps accepted slow-camera samples and waits for a fresh fix
 }) => {
   await page.clock.install();
   await startSyntheticCalibration(page, 333, 0);
+  // Assertions must not advance the sensor into a different calibration point.
+  await page.clock.pauseAt(
+    new Date(await page.evaluate(() => Date.now() + 100)),
+  );
+  const readPoint = () =>
+    page.locator(".calibration-copy").evaluate((copy) => ({
+      point: copy.querySelector('[aria-live="polite"]')?.textContent?.trim(),
+      accepted: Number(
+        copy.querySelector('[data-testid="camera-accepted-samples"]')
+          ?.textContent,
+      ),
+      message: copy.querySelector('[role="status"]')?.textContent,
+    }));
   await page.clock.runFor(2100);
-  const accepted = page.getByTestId("camera-accepted-samples");
-  const before = Number(await accepted.innerText());
-  expect(before).toBeGreaterThan(0);
-  expect(before).toBeLessThan(10);
+  const before = await readPoint();
+  expect(before.point).toBe("1 of 9");
+  expect(before.accepted).toBeGreaterThan(0);
+  expect(before.accepted).toBeLessThan(10);
   await page.evaluate(() => {
     (
       window as Window & { __blinkSlowEyeSamples?: boolean }
     ).__blinkSlowEyeSamples = true;
   });
   await page.clock.runFor(333);
-  await expect(page.locator(".calibration-copy")).toContainText(
-    "Tracking paused",
-  );
-  await expect(accepted).toHaveText(String(before));
+  await expect.poll(readPoint).toEqual({
+    point: before.point,
+    accepted: before.accepted,
+    message: expect.stringContaining("Tracking paused"),
+  });
   await page.evaluate(() => {
     (
       window as Window & { __blinkSlowEyeSamples?: boolean }
     ).__blinkSlowEyeSamples = false;
   });
   await page.clock.runFor(1000);
-  await expect(accepted).toHaveText(String(before));
-  await expect(page.locator(".calibration-copy")).toContainText("1 of 9");
+  await expect.poll(readPoint).toMatchObject({
+    point: before.point,
+    accepted: before.accepted,
+  });
   await page.clock.runFor(4500);
-  await expect(page.locator(".calibration-copy")).toContainText("2 of 9");
+  await expect.poll(readPoint).toMatchObject({ point: "2 of 9" });
   await expect(
     page.getByRole("button", { name: "Check gaze controls", exact: true }),
   ).toBeHidden();
