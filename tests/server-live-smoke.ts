@@ -40,6 +40,8 @@ if (process.env.NERVE_LIVE_TEST !== "1") {
       }
       return response;
     },
+    // This harness shares synthetic lab content only, never local user context.
+    null,
   );
   const records: {
     goal: string;

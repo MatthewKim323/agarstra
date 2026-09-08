@@ -23,6 +23,32 @@ Training-only whole-target cross-validation, robust fitting, distinct-frame coll
 
 Final review added regression tests for raw, unclipped scoring: a synthetic fixture with rare extreme predictions could previously pass after clipping those errors to the viewport. Cross-validation and independent evaluation now score finite raw predictions, while the public control predictor remains screen-bounded. Camera tests also cover cancellation during both model-loading stages, bounded initialization, failed teardown, stale-session inference, and exclusive worker ownership during overlapping messages.
 
+## Stuck-dot follow-up
+
+The initial upgrade's tests missed a timing boundary: requiring five observations inside a 650 ms history made stable inputs slower than about 6.15 frames per second unable to collect any samples. A second defect treated repeated UI polls of one already-delivered result as fresh evidence of tracking loss once its original capture aged past 350 ms.
+
+The follow-up uses a seven-observation history bounded by the existing capture-gap checks, and distinguishes a repeated poll from a newly delivered frame. The UI now admits observations into active gaze calibration immediately on arrival, retaining their original capture timestamps. This avoids adding up to 70 ms of UI polling delay to an otherwise usable slow inference. New captures still require age at most 350 ms; duplicate observations never add samples, extend their receipt time, or advance progress. Actual stalls, lost tracking, and sudden eye movements still clear the current collection. Mean and tail accuracy limits remain unchanged.
+
+Regression fixtures that failed before the fix now advance the first target at 165, 200, 300, and 333 ms frame intervals. A full synthetic fourteen-target session also completes with 300 ms frame spacing, 200 ms capture-to-delivery delay, and 70 ms UI polling. Targeted calibration/session tests: 57 passed. This establishes a collector fix, not measured improvement on the user's camera.
+
+Camera setup now makes switch scanning explicit opt-in. Its automatic button outline is not a gaze estimate. Local-only rate, capture-delay, and accepted-sample readouts distinguish incoming eye-model observations from successful screen calibration. Four browser fixtures replace only the sensor and verify first-dot advancement at 200 to 333 ms frame intervals with up to 330 ms capture delay, then pause deliveries and verify that the displayed usable rate and accepted count reset. A fifth fixture delivers high-quality but 400 ms-old captures every 200 ms; both counters stay zero and the dot cannot advance. These fixtures never open a real webcam.
+
+The follow-up release checks passed: 275 release-scoped unit tests across 14 files, strict TypeScript and production build, all 35 release-scoped browser tests, and a dependency audit with zero reported vulnerabilities. GitHub's clean Ubuntu runner also passed [run 34289688700](https://github.com/MatthewKim323/agarstra/actions/runs/34289688700), including the final compact layout. Browser checks include native Space opt-in, no automatic scanning during calibration, stopped synthetic camera tracks, and accessibility checks with the camera footer no longer covering other controls. A CI synchronization regression ensures the emergency-stop key event is dispatched while that control is actually highlighted, rather than after layout inspection has consumed another scanner turn. Separate uncommitted intent-learning work was excluded from this release.
+
+## Eyes-only and personal intent integration
+
+The combined local gate passed 505 unit tests across 26 files, strict TypeScript and a production build, 68 Chromium browser tests in 3.2 minutes, and a dependency audit with zero reported vulnerabilities. The browser suite used a separate loopback server and session, leaving the running user workspace intact. Sensor fixtures and generated-camera tests do not establish real-person gaze accuracy.
+
+Final review then made screenshot artifact paths portable to Linux and unified manual and gaze Stop behind the same terminal latch. A new still-mounted-view regression verifies that repeated manual Stop blocks later fixation and timeout callbacks. All 29 affected browser cases passed again in 53.2 seconds, and the production build passed again. The complete suite now contains 69 cases; the recorded local evidence is the 68-case full run plus the affected-case rerun, not a claimed 69-case full run.
+
+The integration adds frozen saved-calibration rechecks, an independent check of the actual large control regions, center-to-command rearming, and learning from explicitly accepted goals or rejection of the offered goals. A separate full-size screenshot view gathers coarse attention without clicking the browser or creating a training label. Returning from that view requires fresh rearming before any goal or approval can activate.
+
+Brief tracking interruptions may preserve accepted calibration samples for at most 700 ms, but require another stable fixation before collection resumes. Lost time and renewed settling time never count as collected evidence. Longer loss, changed eye geometry, and target changes discard the retained samples. New captures still must arrive within 350 ms. Boundary regressions prime nearly complete holds at three frames per second: distinct 349/350 ms-old captures may complete them, while distinct 351 ms-old captures cannot fire an action, advance a check, preserve readiness, or extend its deadline.
+
+The optional server-side personal-context file supplies explicit background, not training examples. Vite now denies the private `.nerve` directory in addition to its existing secret-file rules. Twenty-four policy regressions pass, including 11 that failed before the fix. HEAD requests against the running development server returned 403 for both the root-relative private-context path and its `/@fs` raw-query form; the app root returned 200. No private response bodies were requested. This check is separate from gitignore and production static serving.
+
+The [intent experiment](INTENT_VERIFICATION.md) was reproduced independently: 53 of 60 frozen synthetic check decisions matched the scripted label, compared with 19 of 60 for the original ranking. After a scripted preference change, personalization initially hurt and scored 63 of 80 compared with 70 of 80 for the baseline. These are small synthetic mechanism checks, not human prediction accuracy or evidence that the system reads thoughts.
+
 ## Initial release gate
 
 After source formatting and the fresh-screen fix, `npm run check` completed successfully:
@@ -50,6 +76,8 @@ All seven task responses returned HTTP 200. These are single observed runs, not 
 A separate live screenshot-suggestion request returned three validated intents: Draft a reply, Save a meeting note, and Summarize the invitation. Source was `astra`, normalized weights totaled one, and no computer action was executed. These weights are heuristic, not calibrated intent probabilities.
 
 Reproduction harness: `tests/server-live-smoke.ts`. Provider output can vary between runs. This evidence establishes live integration on the tested tasks, not superiority over other models.
+
+A repeat during eyes-only integration also passed: archive used three provider responses, two approval batches, and two primitive actions in 14.246 seconds; the saved reply used four responses, three batches, and five actions in 10.862 seconds. All eight requests, including the separate suggestion request, returned HTTP 200. The archive timing includes the suggestion check. Both outcomes were independently checked against synthetic lab state. The harness explicitly disables optional private personal context, uses no personal account or webcam, and never sends the draft. This is a live provider integration check, not an eyes-only human trial.
 
 ## Camera runtime
 

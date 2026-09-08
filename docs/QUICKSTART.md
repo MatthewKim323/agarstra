@@ -50,15 +50,24 @@ The same input handles intent selection, confirmation, action approval, cancella
 
 ## 4. Add webcam input
 
+Camera setup does not scan controls automatically. If you use a single switch, choose **Enable switch scanning** (it is initially focused, so Space can enable it). The moving button outline belongs to this optional scanner, not your gaze.
+
 1. Choose **Camera**, then **Enable camera**. Allow camera access in your browser.
 2. Choose **Calibrate gaze**. Read the instructions at your own pace. Nothing is being recorded yet.
 3. Choose **Start gaze calibration** when comfortable. Look directly at the center of the small green dot, not the instructions or camera. Keep looking until it moves, then follow it. No clicks or gestures are needed. Blink naturally.
 4. Follow nine training points and five independent check points. Allow about one minute. A ring fills only while a steady eye signal is being collected; a pause is not a request to click. If it keeps waiting for camera frames, close other camera/video applications.
-5. If both checks pass, choose a comfortable gesture: **Mouth open**, **Eyebrow raise**, or **Smile**.
-6. Choose **Calibrate gesture**. Follow the resting and active prompts without straining.
-7. Choose **Use calibrated input**. Look at a control until it is highlighted, make your gesture to select, then release before selecting again.
+5. Leave **Eyes only** selected. Enable **Remember me on this device** to save the checked calibration and intent learning.
+6. Choose **Check gaze controls**. Follow the four-area check for the large controls. A failed check keeps commands disabled.
+7. When the workspace fills the screen, look at the area you want help with. A steady coarse gaze requests suggestions; it does not click the remote browser or teach an intent. If no steady area is found after eight seconds, Nerve returns to generic choices without reusing an old gaze point. The large **Stop** area remains available.
+8. When the large choices return, look at the center until ready, then hold on the left choice to select it or the right choice to see another. Return to the center between selections, confirmations, and approvals. Accepted goals and an explicit **None of these** teach Nerve automatically. No manual intent lessons or facial gesture are required.
+
+On your next visit, **Check saved calibration** uses five independent check points and skips the training points if your camera and viewport still match. Use the same browser and address/port. To finish, look at **Stop**, then choose **Finish session**. Saved calibration and learning remain on this device. See the [complete eyes-only flow](EYES_ONLY.md).
+
+If you prefer a facial signal, select **Gaze + gesture**, choose a comfortable movement, and use **Calibrate gesture** after passing gaze setup.
 
 ### If the gaze check does not pass
+
+If the dot stays in one place, look at **Usable eye observations** and **Accepted at this point**. A nonzero rate means fresh eye-model observations are arriving, not that screen-gaze accuracy has been established. The accepted count increases only while the signal is steady. A zero rate means no usable observations are arriving right now. Before calibration, check the nearby status, inference duration, and capture-delay readout to distinguish missing tracking from slow processing. The collector supports stable slower inputs without restarting between repeated UI polls. Actual tracking loss and stale new captures still pause it.
 
 Both thresholds must pass: average error at most **0.150** and 95th-percentile error at most **0.255**, measured in normalized viewport distance. These are unchanged experimental large-control thresholds, not accuracy percentages. An acceptable average can coexist with a failing worst-end error. Gaze actions stay disabled when either limit fails.
 
@@ -66,9 +75,9 @@ The result now shows every checked position. Numbered circles are the dots you l
 
 For one retry, use soft front lighting, reduce reflections on glasses, and keep your usual comfortable posture. Look at the dot throughout recording. A retry collects fresh training and independent check observations. Do not keep grinding through failed calibrations or lower the limits to make the demo pass. **Back to workspace**, then **Single switch**, is the reliable alternative.
 
-If you want help diagnosing the result, choose **Download numeric diagnostics**. This opt-in local JSON file includes per-point errors, collection counts, viewport dimensions, and training-only model-selection summaries. It excludes video, images, landmarks, raw eye features, and fitted model weights. Nothing is automatically uploaded; review the file before sharing it.
+If you want help diagnosing the result, choose **Download numeric diagnostics**. This opt-in local JSON file includes per-point errors, collection counts, viewport dimensions, training-only model-selection summaries, and aggregate camera timing information. It excludes video, images, landmarks, raw eye features, and fitted model weights. Nothing is automatically uploaded; review the file before sharing it.
 
-Recalibrate after moving the camera, changing posture, or resizing the viewport. Ordinary blinking never clicks. Leaving camera mode stops capture; calibration lasts only for the current session. **Cancel calibration** and **Emergency stop** remain available, including through switch scanning; Escape stops globally.
+Recalibrate after moving the camera, changing posture, or resizing the viewport. Ordinary blinking never clicks. Leaving camera mode stops capture and clears current readiness; saved profiles remain available for a fresh check. **Cancel calibration** and **Emergency stop** remain available, including through switch scanning; Escape stops globally.
 
 ### What is actually running
 
@@ -87,7 +96,7 @@ A server-side API key with access to `gpt-6-astra` is required. This uses the AP
 5. Read and enable the screenshot-sharing consent, then choose **Start Astra session**.
 6. Choose **Read this screen** for live model-generated suggestions. Select an intent, confirm it, and review each **Approve action** preview until the task completes.
 
-Astra receives the isolated browser screenshots, task content, and an optional coarse attention point from pointer or calibrated gaze input. It does not receive webcam video, eye crops, landmarks, or calibration data. Practice mode needs no key. If your account lacks Astra access, Nerve shows an error instead of silently switching models.
+Astra receives the isolated browser screenshots, task content, and an optional coarse attention point from pointer or calibrated gaze input. If you configure the optional private `.nerve/personal-context.json`, its supplied background and preferences also go to Astra when generating suggestions. That background is not a learned preference, a current intention, or permission to act. It is separate from the local ranker, which learns from your explicitly accepted choices. See [personal context setup and sharing](PERSONAL_CONTEXT.md). Astra does not receive webcam video, eye crops, landmarks, or calibration data. Practice mode needs no key. If your account lacks Astra access, Nerve shows an error instead of silently switching models.
 
 External starting pages must use HTTPS on the default port and public addresses. Only the approved origin is allowed. Cross-origin sign-in, third-party assets, downloads, new tabs, and WebSockets may be blocked. Start with synthetic data. The app controls its isolated browser, not your host desktop or personal browser profile.
 
