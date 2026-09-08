@@ -1,5 +1,30 @@
 # Changelog
 
+## Gaze upgrade - 2026-09-08
+
+### Added
+
+- Pretrained Peekr appearance-based gaze inference with pinned, hash-verified weights and locally served ONNX WASM. Eye images never leave the device.
+- An 18-feature personal mapping combining eye appearance and geometry, with robust target-balanced fitting and training-only whole-target model selection.
+- Untimed calibration instructions, explicit start, fixation-aware sample collection, and separate per-target offset and jitter results.
+- Opt-in numeric diagnostic downloads without images, raw eye features, or fitted model weights.
+- Real local neural-inference, production-camera, and camera lifecycle regression tests.
+- Gaze-model research, provenance, third-party notices, and updated setup and evaluation guidance.
+
+### Changed
+
+- Renamed the public GitHub repository from `intentions` to `agarstra`. The app remains Nerve.
+- Explain which accuracy threshold failed rather than calling every failed calibration unstable. Mean `0.150` and 95th-percentile `0.255` limits are unchanged.
+- Score cross-validation and independent checks before clipping predictions to the screen, so out-of-screen errors cannot be hidden.
+- Bound and cancel model initialization, isolate teardown failures, and keep exclusive ownership of in-flight worker frames.
+- Explicitly disclose that live intent suggestions can share a coarse attention point with Astra, while camera frames and calibration remain local.
+- Upgrade Vitest to 4.1.11 to address the reported dependency advisory.
+
+### Limits
+
+- Automated tests use synthetic inputs. Human accuracy after this upgrade remains unmeasured.
+- A failed independent check still leaves gaze actions disabled; pointer and switch input remain available.
+
 ## 0.1.0 - 2026-09-08
 
 Initial hackathon release of Nerve in the `intentions` repository.

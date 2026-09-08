@@ -1,22 +1,35 @@
 # Your first complete task
 
-Nerve is the app; `intentions` is the repository. Start with practice mode, then try the same workflow with Astra. Camera input is optional in either mode.
+Nerve is the app; `agarstra` is the repository. Start with practice mode, then try the same workflow with Astra. Camera input is optional in either mode.
 
 ## 1. Run it locally
 
 Install Node.js 22.12 or newer; Node 24 is recommended. Use a current Chromium-based browser.
 
 ```sh
-git clone https://github.com/MatthewKim323/intentions.git
-cd intentions
+git clone https://github.com/MatthewKim323/agarstra.git
+cd agarstra
 npm ci
 npm run setup
 npm run dev
 ```
 
-With GitHub CLI, `gh repo clone MatthewKim323/intentions` can replace the first command. If you already have the project, change into that directory instead of cloning it again.
+With GitHub CLI, `gh repo clone MatthewKim323/agarstra` can replace the first command. If you already have the project, change into that directory instead of cloning it again.
 
 Keep the terminal running and open [http://127.0.0.1:4317](http://127.0.0.1:4317). Setup downloads isolated Chromium and local vision assets; it does not request camera access. On Linux, Playwright may also need system dependencies: `npx playwright install --with-deps chromium`.
+
+### Updating an existing checkout
+
+The gaze upgrade adds a pretrained local model and runtime dependencies. Stop the old development server with Ctrl+C. From your existing project directory:
+
+```sh
+git pull --ff-only
+npm ci
+npm run setup
+npm run dev
+```
+
+Reload the app after that one restart. Do not open a second server on the same ports. If `git pull --ff-only` reports local changes or divergent history, preserve your changes and resolve that separately; do not reset or force-pull them away. Setup downloads and checks the Peekr model and installs local runtimes, but never opens the camera.
 
 ## 2. Save a draft with minimal input
 
@@ -38,14 +51,30 @@ The same input handles intent selection, confirmation, action approval, cancella
 ## 4. Add webcam input
 
 1. Choose **Camera**, then **Enable camera**. Allow camera access in your browser.
-2. Choose **Calibrate gaze**. Follow nine calibration targets, then five separate validation targets.
-3. If validation passes, choose a comfortable gesture: **Mouth open**, **Eyebrow raise**, or **Smile**.
-4. Choose **Calibrate gesture**. Follow the resting and active prompts without straining.
-5. Choose **Use calibrated input**. Look at a control until it is highlighted, make your gesture to select, then release before selecting again.
+2. Choose **Calibrate gaze**. Read the instructions at your own pace. Nothing is being recorded yet.
+3. Choose **Start gaze calibration** when comfortable. Look directly at the center of the small green dot, not the instructions or camera. Keep looking until it moves, then follow it. No clicks or gestures are needed. Blink naturally.
+4. Follow nine training points and five independent check points. Allow about one minute. A ring fills only while a steady eye signal is being collected; a pause is not a request to click. If it keeps waiting for camera frames, close other camera/video applications.
+5. If both checks pass, choose a comfortable gesture: **Mouth open**, **Eyebrow raise**, or **Smile**.
+6. Choose **Calibrate gesture**. Follow the resting and active prompts without straining.
+7. Choose **Use calibrated input**. Look at a control until it is highlighted, make your gesture to select, then release before selecting again.
 
-Failed validation keeps gaze actions disabled. Improve lighting and camera stability, retry, or use a switch. Recalibrate after moving the camera, changing posture, or resizing the viewport. Ordinary blinking never clicks. Leaving camera mode stops capture; calibration lasts only for the current session.
+### If the gaze check does not pass
 
-Camera frames and landmarks stay local. This is experimental coarse gaze input, not thought reading, medical-grade eye tracking, or a clinically validated accessibility device. Real-person calibration and usability still need evaluation.
+Both thresholds must pass: average error at most **0.150** and 95th-percentile error at most **0.255**, measured in normalized viewport distance. These are unchanged experimental large-control thresholds, not accuracy percentages. An acceptable average can coexist with a failing worst-end error. Gaze actions stay disabled when either limit fails.
+
+The result now shows every checked position. Numbered circles are the dots you looked at; hollow circles are the average estimates. A long connecting line indicates consistent offset. The **Jitter** column reports how much estimates scattered around their average. That distinction helps separate one poorly estimated screen region from unstable tracking.
+
+For one retry, use soft front lighting, reduce reflections on glasses, and keep your usual comfortable posture. Look at the dot throughout recording. A retry collects fresh training and independent check observations. Do not keep grinding through failed calibrations or lower the limits to make the demo pass. **Back to workspace**, then **Single switch**, is the reliable alternative.
+
+If you want help diagnosing the result, choose **Download numeric diagnostics**. This opt-in local JSON file includes per-point errors, collection counts, viewport dimensions, and training-only model-selection summaries. It excludes video, images, landmarks, raw eye features, and fitted model weights. Nothing is automatically uploaded; review the file before sharing it.
+
+Recalibrate after moving the camera, changing posture, or resizing the viewport. Ordinary blinking never clicks. Leaving camera mode stops capture; calibration lasts only for the current session. **Cancel calibration** and **Emergency stop** remain available, including through switch scanning; Escape stops globally.
+
+### What is actually running
+
+A pretrained **Peekr** eye-image CNN runs locally through ONNX Runtime. Its two learned outputs are combined with eight iris/head measurements and eight eye-box coordinates. Personal calibration compares neural, landmark, and combined feature views with linear/quadratic mappings using whole-target cross-validation on training points only. The five independent check targets are never used to tune or choose that mapping.
+
+Camera frames, eye crops, and landmarks stay local. This is experimental coarse gaze input, not thought reading, medical-grade eye tracking, or a clinically validated accessibility device. The upgraded implementation has not established a real-person accuracy improvement. See the [gaze research and model provenance](GAZE_RESEARCH.md), [third-party notices](../THIRD_PARTY_NOTICES.md), and [evaluation protocol](EVALUATION.md).
 
 ## 5. Connect Astra
 
@@ -58,7 +87,7 @@ A server-side API key with access to `gpt-6-astra` is required. This uses the AP
 5. Read and enable the screenshot-sharing consent, then choose **Start Astra session**.
 6. Choose **Read this screen** for live model-generated suggestions. Select an intent, confirm it, and review each **Approve action** preview until the task completes.
 
-Astra receives the isolated browser screenshots and task content, not webcam video or calibration data. Practice mode needs no key. If your account lacks Astra access, Nerve shows an error instead of silently switching models.
+Astra receives the isolated browser screenshots, task content, and an optional coarse attention point from pointer or calibrated gaze input. It does not receive webcam video, eye crops, landmarks, or calibration data. Practice mode needs no key. If your account lacks Astra access, Nerve shows an error instead of silently switching models.
 
 External starting pages must use HTTPS on the default port and public addresses. Only the approved origin is allowed. Cross-origin sign-in, third-party assets, downloads, new tabs, and WebSockets may be blocked. Start with synthetic data. The app controls its isolated browser, not your host desktop or personal browser profile.
 

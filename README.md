@@ -2,9 +2,11 @@
 
 **A little intent. A lot more possible.**
 
-The app is called **Nerve**; its public hackathon repository is [intentions](https://github.com/MatthewKim323/intentions).
+The app is called **Nerve**; its public hackathon repository is [agarstra](https://github.com/MatthewKim323/agarstra).
 
 Nerve is a local-first assistive computer-use interface. A person indicates a region or selects a suggested intent with a pointer, a single switch, or calibrated webcam input. The system previews the exact browser actions, waits for explicit approval, executes them in a fresh isolated Chromium session, then observes the result.
+
+The product north star is the experience of **"Nerve reads my mind"**: infer a useful intended task from minimal signals and screen context, ask only the clarification needed, and carry out approved work. Gaze is one input, not the product. Success means less explanation and physical input per correctly completed task, with uncertainty, corrections, and user control measured alongside it.
 
 This is working software, not mind reading. Webcam gaze is experimental, and this project has not been validated with people with disabilities. It does not read thoughts, infer emotions, diagnose conditions, or provide medical-grade eye tracking.
 
@@ -13,8 +15,8 @@ This is working software, not mind reading. Webcam gaze is experimental, and thi
 Requirements: Node.js 22.12 or newer (Node 24 recommended), npm, and a current Chromium-based browser. macOS, Linux, and Windows are supported by the underlying browser tooling. This checkout was tested on macOS.
 
 ```sh
-git clone https://github.com/MatthewKim323/intentions.git
-cd intentions
+git clone https://github.com/MatthewKim323/agarstra.git
+cd agarstra
 npm ci
 npm run setup
 npm run dev
@@ -24,7 +26,16 @@ Open **http://127.0.0.1:4317**. Click **Start practice**. No API key or camera i
 
 Already have this checkout? Skip the clone and change into its directory. For the first complete task, camera setup, switch controls, and live Astra setup, follow the [quickstart](docs/QUICKSTART.md).
 
-`npm run setup` installs isolated Chromium and downloads the pinned Google Face Landmarker model plus local WASM assets. It never opens the camera. After setup, practice mode and webcam processing do not require a third-party CDN. Fonts are bundled locally.
+`npm run setup` installs isolated Chromium, the pinned Google Face Landmarker model, the hash-verified Peekr pretrained gaze model, and local MediaPipe/ONNX Runtime WASM assets. It never opens the camera. After setup, practice mode and webcam processing do not require a third-party CDN. Fonts are bundled locally.
+
+Updating an existing checkout for the new gaze pipeline? Stop its development server with Ctrl+C, then run the following from that checkout and reload the browser. The dependency and model changes require one server restart.
+
+```sh
+git pull --ff-only
+npm ci
+npm run setup
+npm run dev
+```
 
 For the built application:
 
@@ -42,7 +53,8 @@ Open **http://127.0.0.1:4318**. The UI and local bridge are served together. On 
 - Astra intent suggestions based on the current screen and an optional coarse attention region.
 - GPT-6 Astra native computer-use actions through the Responses API, with explicit screenshot consent and bounded execution.
 - Single-switch scanning with Space, including intent selection, confirmation, action approval, cancellation, stop, resume, and dialog controls. Tab/Enter always remain available.
-- Optional camera input: local face landmarks and iris/head features, ridge-regression calibration, held-out validation targets, timestamp-aware smoothing, deliberate gesture calibration, hysteresis, and release-to-rearm.
+- Optional camera input: a local pretrained Peekr eye-image CNN plus iris/head and eye-box geometry, personal calibration selected by whole-target cross-validation, independent held-out checks, smoothing, deliberate gesture calibration, hysteresis, and release-to-rearm.
+- Untimed calibration instructions, fixation-aware collection, point-by-point error and jitter maps, and optional numeric diagnostic downloads without camera images or feature vectors.
 - Temporal spatial evidence and ambiguity gating. Gaze only highlights; deliberate input selects. Scores are heuristic, not calibrated probabilities of intent.
 - One-use, expiring action approvals tied to the screen revision. A changed screenshot invalidates approval.
 - Always-visible emergency stop, page-hidden stop, stale-input rejection, and cancellation checks between actions.
@@ -56,7 +68,7 @@ Then choose **Connect Astra**, review the screenshot-sharing consent, and start 
 
 The model ID is exactly `gpt-6-astra`; Nerve does not silently substitute another model. Having a key does not guarantee that the account can access that model. Provider failures are shown as errors, never relabeled as successful practice runs.
 
-Only browser screenshots and selected task text go to OpenAI. Camera frames, face landmarks, gaze calibration, and gesture samples do not. `store: false` is used; the provider's account policies still govern handling and retention.
+Browser screenshots, selected task text, and an optional coarse attention point go to OpenAI in live mode. That point may come from pointer or calibrated gaze input. Camera frames, eye crops, face landmarks, gaze calibration, and gesture samples do not leave the device. `store: false` is used; the provider's account policies still govern handling and retention.
 
 An optional external starting page must be HTTPS on the default port and resolve to public addresses. The browser pins an approved address and only permits the approved origin. Third-party assets, cross-origin authentication, new tabs, downloads, WebSockets, internal addresses, and the host desktop are blocked. This deliberately restricts compatibility. Use synthetic data first.
 
@@ -72,7 +84,11 @@ Select **Single switch**. Connect a switch configured to emit Space, or use the 
 
 ### Camera
 
-Select **Camera**, then **Enable camera**. Permission is requested only then. Follow the nine calibration targets and five held-out validation targets. If validation is rejected, gaze input is not enabled. Teach one comfortable gesture using separate resting and active samples. Ordinary blinking is not used as a click.
+Select **Camera**, then **Enable camera**. Permission is requested only then. Choose **Calibrate gaze**, read the untimed instructions, then choose **Start gaze calibration**. Look at the center of the small green dot until it moves. Do not look back at the instructions while a point is recording. No clicking or gesture is needed; blink naturally. The ring fills only after a steady eye signal is detected. Nine points train the personal mapping, then five separate points check it.
+
+The camera pipeline builds 18 features: eight iris/head features, two pretrained Peekr outputs, and eight eye-box coordinates. Training-only cross-validation holds out entire training targets to choose among neural, landmark, and combined feature views and linear/quadratic mappings. The five independent check targets never choose or fit the model. This improves the engineering of calibration; it is not a measured human-accuracy claim.
+
+The unchanged acceptance limits are mean error ≤ 0.150 and 95th-percentile error ≤ 0.255 in normalized viewport distance. Both must pass. A failing check leaves gaze actions disabled and shows each target's average estimate, error, and jitter. **Download numeric diagnostics** optionally saves a local summary of model selection, collection counts, and validation results. It contains no video, images, landmarks, raw eye features, or fitted model weights, and nothing is automatically uploaded. Review it before sharing. After gaze passes, choose **Calibrate gesture** and teach one comfortable gesture using separate resting and active samples. Ordinary blinking is not used as a click.
 
 Look at an available control until highlighted, then make the calibrated gesture. Release before selecting again. Looking inside the browser screenshot sets a coarse attention region for **Read this screen**, not a remote click. Camera estimates do not prove intent and can be wrong. Recalibrate after moving the camera, changing posture, or resizing the viewport. Switching away from camera stops capture. Calibration is session-only, not automatically restored from saved preferences.
 
@@ -122,7 +138,7 @@ switch / pointer --------------------------+        |
                              fresh screenshot + outcome check
 ```
 
-- `src/vision`: local MediaPipe worker, feature extraction, calibration, smoothing, deliberate-gesture detector.
+- `src/vision`: local MediaPipe worker, Peekr/ONNX eye-image inference, feature fusion, robust calibration and whole-target model selection, independent validation, smoothing, deliberate-gesture detector.
 - `src/core`: temporal intent ranking, dwell, scanning, and profile validation.
 - `src/App.tsx`, `src/components`: accessible interface, input selection, calibration workflow.
 - `server/session.ts`: cancellable state machine and authorization boundary.
@@ -135,21 +151,22 @@ switch / pointer --------------------------+        |
 
 This release controls its isolated browser, not arbitrary applications on your desktop. Local services are single-user and must not be exposed through a tunnel or to a public network. The UI does not authenticate different local OS users or local processes. The practice workspace is disposable, and Reset discards its data. External completion is labeled as Astra's report and requires checking the resulting screen; it is not independently verified in every possible application.
 
-See [research and sources](docs/RESEARCH.md), [safety and privacy](docs/SAFETY.md), [evaluation protocol](docs/EVALUATION.md), [API contract](docs/API.md), and [demo guide](docs/DEMO.md).
+See [research and sources](docs/RESEARCH.md), [gaze model research](docs/GAZE_RESEARCH.md), [third-party notices](THIRD_PARTY_NOTICES.md), [safety and privacy](docs/SAFETY.md), [evaluation protocol](docs/EVALUATION.md), [API contract](docs/API.md), and [demo guide](docs/DEMO.md).
 
 ## Troubleshooting
 
-| Symptom                               | Check                                                                                 |
-| ------------------------------------- | ------------------------------------------------------------------------------------- |
-| Local bridge disconnected             | Run `npm run dev`; ports 4317 and 4318 must be available.                             |
-| Bridge was restarted during a session | Reload the interface to begin a fresh client session. Old proposals are not reusable. |
-| Chromium unavailable                  | Run `npm run setup`. Linux hosts may also need Playwright system dependencies.        |
-| Camera denied                         | Allow the site in browser camera settings, or continue with switch/pointer.           |
-| Model assets unavailable              | Re-run `npm run setup`, then reload. No CDN fallback silently uploads data.           |
-| Gaze check fails                      | Improve lighting, stabilize camera/posture, retry without strain, or use a switch.    |
-| Astra access error                    | Check key/model entitlement. Nerve never switches models without your choice.         |
-| Page fails to load                    | External-origin restrictions may block its dependencies or redirects.                 |
-| Proposal rejected as stale            | The screen changed. Request a fresh intent; do not bypass the check.                  |
-| Stop happened while away              | Hiding the page stops the task intentionally. Resume and choose a new intent.         |
+| Symptom                               | Check                                                                                                                                                                     |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local bridge disconnected             | Run `npm run dev`; ports 4317 and 4318 must be available.                                                                                                                 |
+| Bridge was restarted during a session | Reload the interface to begin a fresh client session. Old proposals are not reusable.                                                                                     |
+| Chromium unavailable                  | Run `npm run setup`. Linux hosts may also need Playwright system dependencies.                                                                                            |
+| Camera denied                         | Allow the site in browser camera settings, or continue with switch/pointer.                                                                                               |
+| Model assets unavailable              | Re-run `npm run setup`, then reload. No CDN fallback silently uploads data.                                                                                               |
+| Gaze check fails                      | Inspect the per-point error map. Reduce glare, use comfortable steady posture and soft front lighting, then retry once or use a switch. Numeric diagnostics are optional. |
+| Gaze never starts recording           | Choose **Start gaze calibration** after the instructions. If a point waits for frames, close other camera/video apps.                                                     |
+| Astra access error                    | Check key/model entitlement. Nerve never switches models without your choice.                                                                                             |
+| Page fails to load                    | External-origin restrictions may block its dependencies or redirects.                                                                                                     |
+| Proposal rejected as stale            | The screen changed. Request a fresh intent; do not bypass the check.                                                                                                      |
+| Stop happened while away              | Hiding the page stops the task intentionally. Resume and choose a new intent.                                                                                             |
 
 Third-party packages and model assets retain their respective licenses. No clinical safety, reliability, or accuracy claims are made.

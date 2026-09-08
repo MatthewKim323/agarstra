@@ -2,7 +2,28 @@
 
 Tested 8 September 2026 on macOS, Node.js 24.7.0, Chromium through Playwright 1.63.0. These are implementation checks, not disability-user trials or a general benchmark of model ability.
 
-## Final release gate
+## Gaze upgrade verification
+
+The final integrated gaze-upgrade gate passed `npm run check` on the same date. The release-scoped unit files were also rerun separately, excluding uncommitted work from another development stream:
+
+| Check                                  | Result                     |
+| -------------------------------------- | -------------------------- |
+| Release-scoped unit tests              | 265 passed across 14 files |
+| Strict TypeScript and production build | Passed                     |
+| Real Chromium browser tests            | 29 passed in 2.0 minutes   |
+| Dependency audit                       | 0 reported vulnerabilities |
+
+This gate includes an actual forward pass through the pinned Peekr ONNX network using generated eye images and supplied synthetic landmarks. It checks finite outputs and local-only requests. Separate generated-camera tests load MediaPipe, Peekr, and ONNX WASM in development and in the built production app, then verify stopped media tracks. The generated camera is not a person, and supplied synthetic landmarks do not verify real-camera detection or gaze accuracy.
+
+A separate browser fixture replaces only the sensor adapter inside that test context. The real calibration session and UI complete nine training and five independent check points, reject a stable single-target bias, keep gaze actions disabled, and export the numeric diagnostics without image or raw-feature fields. Ready remains untimed beyond the target timeout. Automated accessibility checks pass on Ready and the rejected-results screen. These are synthetic observations, not a human calibration result.
+
+The real-user result reported before this upgrade was mean error `0.138` and 95th-percentile error `0.295`. The mean passed the `0.150` cutoff; the tail failed the `0.255` cutoff. Those cutoffs remain unchanged. A regression test retains that rejection. We have not measured this person's accuracy after the upgrade.
+
+Training-only whole-target cross-validation, robust fitting, distinct-frame collection, fixation checks, and per-target error diagnostics have automated coverage. They improve the implementation, not the strength of any human-performance claim. Independent check observations never select or fit the model.
+
+Final review added regression tests for raw, unclipped scoring: a synthetic fixture with rare extreme predictions could previously pass after clipping those errors to the viewport. Cross-validation and independent evaluation now score finite raw predictions, while the public control predictor remains screen-bounded. Camera tests also cover cancellation during both model-loading stages, bounded initialization, failed teardown, stale-session inference, and exclusive worker ownership during overlapping messages.
+
+## Initial release gate
 
 After source formatting and the fresh-screen fix, `npm run check` completed successfully:
 
@@ -50,7 +71,7 @@ Accessibility checks use axe for WCAG A/AA rules on tested entry, setup, active 
 
 An independent production server on an ephemeral loopback port served the built HTML, JavaScript bundle, health endpoint, and idle session without opening a controlled browser. It was then closed cleanly. The macOS launcher's non-mutating `--check` recognized the existing development instance. Starting another production process on the occupied port failed clearly without stopping the running instance. Shell and launcher JavaScript syntax checks passed.
 
-`Launch Nerve.command` checks the Node version, reuses an existing Nerve interface, refuses unknown port occupants, reports setup/build/startup failures, and only shuts down its own child process. The included GitHub Actions workflow has been configured but was not run on GitHub during this local verification.
+`Launch Nerve.command` checks the Node version, reuses an existing Nerve interface, refuses unknown port occupants, reports setup/build/startup failures, and only shuts down its own child process. The initial-release workflow subsequently passed on GitHub's Ubuntu runner: [run 34281469112](https://github.com/MatthewKim323/agarstra/actions/runs/34281469112).
 
 ## Deliberate boundaries
 

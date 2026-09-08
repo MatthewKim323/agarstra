@@ -2,15 +2,18 @@
 
 The evaluation question is: can contextual task selection reduce intentional input while preserving user control and actual task success?
 
+The product north star is a "reads my mind" experience, not literal thought decoding. Judge progress by how little a person must explain or physically do to reach the right completed task. Eye-tracker accuracy alone does not establish that outcome; intent misses, clarification effort, corrections, and unwanted actions count against it.
+
 ## Keep evidence categories separate
 
-| Evidence                                                 | What it establishes                                     | What it does not establish                             |
-| -------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------ |
-| Unit test with generated landmarks                       | Mathematical behavior and edge-case handling            | Real webcam accuracy or comfort                        |
-| Browser test using pointer/keyboard and practice actions | UI, approval, and actual controlled-browser integration | Astra reasoning, gaze performance, or clinical benefit |
-| Camera trial on real hardware                            | Behavior for that person, setup, and session            | Reliability across people or environments              |
-| Live API run                                             | Integration with that configured model and task         | General capability or superiority to another model     |
-| Consented participant study                              | Outcomes for documented participants and conditions     | Universal accessibility or medical effectiveness       |
+| Evidence                                                 | What it establishes                                                | What it does not establish                             |
+| -------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------ |
+| Unit test with generated landmarks                       | Mathematical behavior and edge-case handling                       | Real webcam accuracy or comfort                        |
+| Local pretrained-model loading or tensor-contract test   | Model asset availability, input layout, and finite output behavior | Correct gaze for a person or an accuracy improvement   |
+| Browser test using pointer/keyboard and practice actions | UI, approval, and actual controlled-browser integration            | Astra reasoning, gaze performance, or clinical benefit |
+| Camera trial on real hardware                            | Behavior for that person, setup, and session                       | Reliability across people or environments              |
+| Live API run                                             | Integration with that configured model and task                    | General capability or superiority to another model     |
+| Consented participant study                              | Outcomes for documented participants and conditions                | Universal accessibility or medical effectiveness       |
 
 Synthetic scores, seeded rankings, practice completions, and generated sensor inputs must be labeled as such. Do not combine their success counts with human camera trials or live model runs.
 
@@ -26,7 +29,7 @@ npm run test:e2e
 
 The Playwright suite uses a real browser without requesting a real webcam, account login, or API key. It runs serially because the local controller has one active browser session. Failure screenshots and traces are captured in `test-results/`. The test suite does not measure human reaction time or model latency.
 
-One test launches Chromium with its generated fake-camera device and loads the actual local MediaPipe model and WASM runtime. It verifies startup, local asset loading, no external requests during that flow, media-track cleanup, restart, and single-switch Emergency stop during the real calibration overlay. A generated test pattern is not a human face and cannot validate gaze accuracy or gesture recognition. A separate delayed-permission fixture verifies that closing camera setup stops a stream granted afterward.
+One test launches Chromium with its generated fake-camera device and loads the local vision assets and runtimes. The upgraded camera path initializes MediaPipe and the pretrained Peekr ONNX model. Tests cover startup, local asset loading, no external requests during that flow, media-track cleanup, restart, and single-switch Emergency stop during calibration. A generated test pattern is not a human face and cannot validate gaze accuracy or gesture recognition. A separate delayed-permission fixture verifies that closing camera setup stops a stream granted afterward. See [recorded verification](VERIFICATION.md) for what a particular completed run actually verified.
 
 The accessibility tests run axe against the entry, Settings, Camera, and Astra setup dialogs, the running synthetic camera, the active workspace, and its approval controls. Automated rule coverage is limited; a zero-violation result is not a WCAG conformance certification or substitute for keyboard/switch and participant testing.
 
@@ -48,13 +51,28 @@ Practice plans may be deterministic. That makes them useful integration tests, n
 
 1. Explain privacy and stop controls. Use fictional messages and notes. Record voluntary input preference rather than assuming camera access.
 2. Let the participant configure a comfortable scan/dwell rate and gesture, where supported. Record the configuration.
-3. If testing camera, calibrate and then validate on distinct target positions. Do not count calibration fitting error as held-out performance.
+3. If testing camera, calibrate and then validate on separately collected check observations. Distinguish unseen positions from a repeated center check. Do not count calibration fitting error as held-out performance.
 4. Compare contextual task selection with a straightforward fixed-order single-switch scan using the same task set, resources, confirmation requirements, and time budget.
 5. Counterbalance condition order. Give equivalent practice. Record failures, assistance, and abandoned tasks, not just completions.
 6. Repeat tasks with altered layout or message content. Stop at participant request or discomfort.
 7. Report per-person results before aggregates. Small exploratory samples are not evidence of general superiority.
 
 This protocol is a proposed study design, not a claim that a participant study has occurred.
+
+## Upgraded gaze calibration protocol
+
+The current pipeline is appearance-based, not only landmark regression. The pretrained local Peekr CNN contributes two outputs. Eight iris/head features and eight eye-box coordinates produce an 18-feature observation. The model source, preprocessing contract, alternatives, and evidence limits are documented in [gaze research](GAZE_RESEARCH.md); attribution is preserved in [third-party notices](../THIRD_PARTY_NOTICES.md).
+
+1. Open **Camera > Enable camera > Calibrate gaze**. Explain what the person will look at before choosing **Start gaze calibration**. The Ready screen is untimed and collects no calibration samples.
+2. Keep a comfortable, repeatable setup. Record browser viewport, camera placement, lighting, glasses, and the person's chosen input without collecting identifying video by default.
+3. Follow nine training points. Collection requires fresh, distinct frames and a steady temporal eye/head signal. A target waits through settling, rejects motion excursions, and fails visibly after its bounded timeout. Record rejected or unavailable tracking rather than silently dropping the whole attempted calibration from evaluation.
+4. Fit robust, target-balanced calibration only on those training observations. Whole-target cross-validation chooses neural-only, landmark-only, neural-plus-eye-position, or fused views and a linear/quadratic mapping. All samples from a held-out training location stay outside that cross-validation fold, including feature normalization.
+5. Freeze the selected model, then collect five independent check targets. Four locations are new off-grid positions; one is a fresh center check. None of these observations is used to fit, choose, or repair the model. Do not describe the center as an unseen location.
+6. Apply both unchanged limits: average error at most 0.150 and 95th-percentile error at most 0.255 in normalized viewport distance. Report failure when either limit fails. Do not lower the thresholds, discard bad check targets, or reuse their labels for model selection to turn a run into a pass.
+7. Inspect the per-target map and table. Average offset and RMS jitter answer different questions. Report failures in a particular screen region separately from broad frame-to-frame variation. A pass allows experimental large-control testing, not a claim of pixel-precise or clinical accuracy.
+8. If the person chooses **Download numeric diagnostics**, review the resulting local JSON before sharing it. It includes viewport dimensions, collection counts, fit-family/feature-view summaries, and target-level check metrics. It does not include video, images, landmarks, raw eye features, or fitted weights. No automatic upload occurs.
+
+A retry starts fresh training and independently collected check observations. Report the total attempts and time, not just the best successful attempt. After a successful check, separately measure intended-control selections, missed controls, accidental selections, gesture effort, and recovery. Repeat after normal posture changes and over time to detect drift. The new model and automated tests do **not** yet establish an improvement in human gaze accuracy.
 
 ## Metrics and definitions
 
@@ -77,7 +95,10 @@ Confidence displays are heuristic unless calibrated against independently labele
 
 - [ ] Real webcam permission granted, denied, revoked, and unavailable have understandable outcomes.
 - [ ] Camera light turns off when camera input is stopped; no video payload is sent to the bridge or model.
-- [ ] Calibration is tested with held-out points, not just fit data.
+- [ ] Ready instructions wait for explicit start, and the person understands to look at the dot rather than the instructions during collection.
+- [ ] Calibration is tested on separately collected check observations, not fit data; the fresh center check is distinguished from the four unseen positions.
+- [ ] Both unchanged error limits are enforced; a passing average cannot mask a failed 95th-percentile error.
+- [ ] Per-point offset/jitter and optional numeric exports agree with the check results and contain no raw biometric inputs.
 - [ ] Missing face, occlusion, lighting change, off-center posture, and window resize cannot silently trigger a command.
 - [ ] One sustained gesture produces at most one selection until release/rearm.
 - [ ] A full practice task, cancellation, approval, pause, and stop can be completed with the intended switch alone.
@@ -109,9 +130,9 @@ Artifacts:
 
 Fill a run record from actual observations; never use illustrative values as a measured result.
 
-## Recorded verification: September 8, 2026
+## Initial release verification: September 8, 2026
 
-These are implementation checks on the development machine, not a participant study or a general capability benchmark.
+The following is the original release record, before the pretrained gaze upgrade. These are implementation checks on the development machine, not a participant study or a general capability benchmark. Do not present these original test counts as the upgraded run; consult [VERIFICATION.md](VERIFICATION.md) for subsequent records.
 
 ### Browser integration
 
