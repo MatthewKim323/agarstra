@@ -552,6 +552,7 @@ test("single-switch scanning reaches secondary navigation and modal consent with
   await expect(page.getByRole("dialog")).toBeHidden();
   await select(page.locator('[data-scan-id="connect-astra"]'));
   const consent = page.getByRole("checkbox");
+  await expect(consent).toHaveAccessibleName(/optional coarse attention point/);
   await select(consent);
   await expect(consent).toBeChecked();
   await select(page.getByRole("button", { name: "Close dialog", exact: true }));
@@ -666,12 +667,10 @@ test("automated accessibility checks pass on entry and setup dialogs", async ({
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
       .analyze();
-    await test
-      .info()
-      .attach(`axe-${label}`, {
-        body: JSON.stringify(results, null, 2),
-        contentType: "application/json",
-      });
+    await test.info().attach(`axe-${label}`, {
+      body: JSON.stringify(results, null, 2),
+      contentType: "application/json",
+    });
     expect
       .soft(
         results.violations.map((item) => ({
@@ -694,6 +693,77 @@ test("automated accessibility checks pass on entry and setup dialogs", async ({
     .getByRole("button", { name: "Connect Astra", exact: true })
     .click();
   await analyze("astra");
+});
+
+test("pretrained gaze network runs on local synthetic eye images without a webcam", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  const external: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.url().startsWith("http") &&
+      new URL(request.url()).origin !== origin
+    )
+      external.push(request.url());
+  });
+  const result = await page.evaluate(async () => {
+    const modulePath = "/src/vision/neural-gaze.ts";
+    const { createNeuralGazeRuntime } = await import(
+      /* @vite-ignore */ modulePath
+    );
+    const runtime = await createNeuralGazeRuntime();
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 640;
+      canvas.height = 480;
+      const context = canvas.getContext("2d")!;
+      context.fillStyle = "#b8ad9a";
+      context.fillRect(0, 0, 640, 480);
+      for (const x of [185, 455]) {
+        context.fillStyle = "white";
+        context.fillRect(x - 50, 140, 100, 48);
+        context.fillStyle = "#293c46";
+        context.beginPath();
+        context.arc(x, 164, 14, 0, Math.PI * 2);
+        context.fill();
+      }
+      const landmarks = Array.from({ length: 478 }, () => ({
+        x: 0.5,
+        y: 0.5,
+        z: 0,
+      }));
+      for (const [index, x, y] of [
+        [130, 0.2, 0.3],
+        [27, 0.2, 0.28],
+        [243, 0.35, 0.3],
+        [23, 0.2, 0.42],
+        [463, 0.65, 0.3],
+        [257, 0.65, 0.28],
+        [359, 0.8, 0.3],
+        [253, 0.65, 0.42],
+      ]) {
+        landmarks[index] = { x, y, z: 0 };
+      }
+      const observation = await runtime.predict(canvas, 640, 480, {
+        faceLandmarks: [landmarks],
+        faceBlendshapes: [],
+        facialTransformationMatrixes: [],
+      });
+      return {
+        raw: observation?.raw,
+        keypoints: observation?.keypoints.length,
+        elapsed: observation?.inferenceMs,
+      };
+    } finally {
+      runtime.close();
+    }
+  });
+  expect(Number.isFinite(result.raw?.x)).toBe(true);
+  expect(Number.isFinite(result.raw?.y)).toBe(true);
+  expect(result.keypoints).toBe(8);
+  expect(result.elapsed).toBeGreaterThanOrEqual(0);
+  expect(external).toEqual([]);
 });
 
 test("real local vision runtime initializes on a synthetic camera and releases its tracks", async () => {
@@ -728,6 +798,12 @@ test("real local vision runtime initializes on a synthetic camera and releases i
     });
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error")
+        runtimeErrors.push(message.text().slice(0, 1000));
+    });
     const externalRequests: string[] = [];
     const visionRequests: string[] = [];
     context.on("request", (request) => {
@@ -743,11 +819,31 @@ test("real local vision runtime initializes on a synthetic camera and releases i
       .click();
     await expect(
       page.getByRole("button", { name: "Calibrate gaze", exact: true }),
-    ).toBeEnabled({ timeout: 60_000 });
+    )
+      .toBeEnabled({ timeout: 60_000 })
+      .catch(async (error) => {
+        await test.info().attach("synthetic-camera-errors", {
+          body: JSON.stringify({
+            errors: runtimeErrors,
+            requests: visionRequests,
+            page: await page.locator("body").innerText(),
+          }),
+          contentType: "application/json",
+        });
+        throw error;
+      });
     expect(
       visionRequests.some((url) => url.endsWith("face_landmarker.task")),
     ).toBeTruthy();
     expect(visionRequests.some((url) => url.endsWith(".wasm"))).toBeTruthy();
+    expect(
+      visionRequests.some((url) => url.endsWith("peekr.onnx")),
+    ).toBeTruthy();
+    expect(
+      visionRequests.some(
+        (url) => url.includes("/vision/onnx/") && url.endsWith(".wasm"),
+      ),
+    ).toBeTruthy();
     await expect(
       page.getByRole("button", { name: "Use calibrated input", exact: true }),
     ).toBeHidden();
@@ -791,6 +887,13 @@ test("real local vision runtime initializes on a synthetic camera and releases i
     ).toBeEnabled({ timeout: 60_000 });
     await page
       .getByRole("button", { name: "Calibrate gaze", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Start gaze calibration", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".calibration-target")).toBeHidden();
+    await page
+      .getByRole("button", { name: "Start gaze calibration", exact: true })
       .click();
     await expect(
       page.getByRole("button", { name: "Cancel calibration", exact: true }),
@@ -916,12 +1019,10 @@ test("an active workspace and its approval controls pass automated accessibility
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
     .analyze();
-  await test
-    .info()
-    .attach("axe-approval", {
-      body: JSON.stringify(results, null, 2),
-      contentType: "application/json",
-    });
+  await test.info().attach("axe-approval", {
+    body: JSON.stringify(results, null, 2),
+    contentType: "application/json",
+  });
   expect(
     results.violations.map((item) => ({
       id: item.id,

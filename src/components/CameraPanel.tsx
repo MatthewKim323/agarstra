@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   AlertTriangle,
   RotateCcw,
+  Download,
 } from "lucide-react";
 import type { Observation } from "../../shared/types";
 import { Dialog } from "./Dialog";
@@ -68,6 +69,9 @@ export function CameraPanel(props: CameraPanelProps) {
   const [gestureState, setGestureState] =
     useState<GestureCalibrationState | null>(null);
   const [scanId, setScanId] = useState("");
+  const [diagnosticReport, setDiagnosticReport] = useState<ReturnType<
+    GazeCalibrationSession["diagnosticReport"]
+  > | null>(null);
   const scanRef = useRef("");
 
   const clearSession = useCallback(() => {
@@ -93,6 +97,7 @@ export function CameraPanel(props: CameraPanelProps) {
       setGazeState(null);
       setGestureState(null);
       setValidation(null);
+      setDiagnosticReport(null);
     }
   }, [clearSession, setReady]);
 
@@ -262,6 +267,7 @@ export function CameraPanel(props: CameraPanelProps) {
       clearSession();
       setGazeState(null);
       setValidation(state.validation);
+      setDiagnosticReport(session.diagnosticReport(viewport.current));
       const passed = Boolean(session.model && state.validation?.passed);
       tracker.current?.setCalibration(passed ? session.model : null);
       gazePassedRef.current = passed;
@@ -272,6 +278,26 @@ export function CameraPanel(props: CameraPanelProps) {
           : state.message,
       );
     }, 70);
+  };
+
+  const startGazeRecording = () => {
+    const calibration = active.current;
+    if (calibration?.kind !== "gaze") return;
+    setGazeState(calibration.session.start(performance.now()));
+  };
+
+  const downloadDiagnostics = () => {
+    if (!diagnosticReport) return;
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(diagnosticReport, null, 2)], {
+        type: "application/json",
+      }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "nerve-gaze-diagnostics.json";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const beginGesture = () => {
@@ -324,9 +350,11 @@ export function CameraPanel(props: CameraPanelProps) {
             !button.closest("[inert]") &&
             button.getClientRects().length > 0 &&
             (!gazeState ||
-              ["cancel", "emergency-stop"].includes(
-                button.dataset.cameraScan ?? "",
-              )),
+              [
+                "cancel",
+                "emergency-stop",
+                ...(gazeState.phase === "ready" ? ["gaze-ready"] : []),
+              ].includes(button.dataset.cameraScan ?? "")),
         )
         .sort(
           (a, b) =>
@@ -375,6 +403,7 @@ export function CameraPanel(props: CameraPanelProps) {
     running,
     busy,
     Boolean(gazeState),
+    gazeState?.phase,
     Boolean(gestureState),
     gazePassed,
     gesturePassed,
@@ -447,9 +476,9 @@ export function CameraPanel(props: CameraPanelProps) {
               </div>
               <div>
                 <p className="dialog-intro">
-                  Use comfortable movements. Experimental gaze highlights a
-                  choice; a deliberate gesture selects it. No emotion or
-                  identity recognition.
+                  A local eye-image model estimates where you look. Personal
+                  calibration adjusts it to your camera and posture. Gaze
+                  highlights a choice; a deliberate gesture selects it.
                 </p>
                 <div className="camera-steps">
                   <div className={running ? "checked" : ""}>
@@ -577,14 +606,140 @@ export function CameraPanel(props: CameraPanelProps) {
               </div>
             )}
             {validation && (
-              <p className="validation-result">
-                Independent check on 5 targets: mean error{" "}
-                {validation.meanError.toFixed(3)}, 95th percentile{" "}
-                {validation.p95Error.toFixed(3)} in normalized viewport units.{" "}
-                {gazePassed
-                  ? "Passed the experimental large-control threshold (mean ≤ 0.150, p95 ≤ 0.255). This is not a confidence or accuracy percentage."
-                  : "Not accepted. No gaze actions are enabled."}
-              </p>
+              <section
+                className="gaze-results"
+                aria-labelledby="gaze-results-title"
+              >
+                <h3 id="gaze-results-title">Your independent gaze check</h3>
+                <p className="validation-result">
+                  Independent check on 5 targets: mean error{" "}
+                  {validation.meanError.toFixed(3)}, 95th percentile{" "}
+                  {validation.p95Error.toFixed(3)} in normalized viewport units.{" "}
+                  {gazePassed
+                    ? "Passed the experimental large-control threshold (mean ≤ 0.150, p95 ≤ 0.255). This is not a confidence or accuracy percentage."
+                    : "Not accepted. No gaze actions are enabled."}
+                </p>
+                {validation.targets && validation.targets.length > 0 && (
+                  <>
+                    <div className="gaze-results-layout">
+                      <svg
+                        className="gaze-error-map"
+                        viewBox="0 0 300 200"
+                        role="img"
+                        aria-label="Gaze check map. Numbered circles are the points you looked at. Small hollow circles show the average gaze estimate."
+                      >
+                        <rect x="1" y="1" width="298" height="198" rx="12" />
+                        {validation.targets.map((result, index) => (
+                          <g
+                            key={index}
+                            className={
+                              result.meanError > 0.15 || result.p95Error > 0.255
+                                ? "outside"
+                                : "inside"
+                            }
+                          >
+                            <title>{`Point ${index + 1}: average error ${result.meanError.toFixed(3)}, 95th percentile ${result.p95Error.toFixed(3)}`}</title>
+                            <line
+                              x1={result.target.x * 300}
+                              y1={result.target.y * 200}
+                              x2={result.predicted.x * 300}
+                              y2={result.predicted.y * 200}
+                            />
+                            <circle
+                              className="gaze-prediction"
+                              cx={result.predicted.x * 300}
+                              cy={result.predicted.y * 200}
+                              r="5"
+                            />
+                            <circle
+                              className="gaze-known-target"
+                              cx={result.target.x * 300}
+                              cy={result.target.y * 200}
+                              r="10"
+                            />
+                            <text
+                              x={result.target.x * 300}
+                              y={result.target.y * 200}
+                            >
+                              {index + 1}
+                            </text>
+                          </g>
+                        ))}
+                      </svg>
+                      <div className="gaze-table-wrap">
+                        <table className="gaze-error-table">
+                          <caption>Errors by screen position</caption>
+                          <thead>
+                            <tr>
+                              <th scope="col">Point</th>
+                              <th scope="col">Average</th>
+                              <th scope="col">95th</th>
+                              <th scope="col">Jitter</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {validation.targets.map((result, index) => (
+                              <tr key={index}>
+                                <th scope="row">
+                                  {index + 1} (
+                                  {result.target.x < 0.4
+                                    ? "left"
+                                    : result.target.x > 0.6
+                                      ? "right"
+                                      : "center"}
+                                  {result.target.y < 0.4
+                                    ? ", top"
+                                    : result.target.y > 0.6
+                                      ? ", bottom"
+                                      : ""}
+                                  )
+                                </th>
+                                <td>{result.meanError.toFixed(3)}</td>
+                                <td>{result.p95Error.toFixed(3)}</td>
+                                <td>{result.dispersion.toFixed(3)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <p className="gaze-result-explanation">
+                      Numbered points are the targets. Hollow points are the
+                      average estimates. Long lines mean a consistent offset;
+                      large jitter means estimates scattered. Errors use
+                      normalized viewport distance, not an accuracy percentage.
+                      Estimates outside the viewport may fall beyond the map;
+                      the table still includes their full, unclipped errors.
+                    </p>
+                    {!gazePassed && (
+                      <p className="gaze-retry-advice">
+                        Try softer front lighting and reduce reflections on
+                        glasses. Keep your usual comfortable posture and look at
+                        the dot, not the text. A retry collects fresh training
+                        and check points. If it fails again, use switch input
+                        and optionally share the numeric report so we can
+                        diagnose the specific limitation.
+                      </p>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
+            {diagnosticReport && (
+              <div className="gaze-report-export">
+                <button
+                  {...scanning("diagnostics")}
+                  className="secondary"
+                  onClick={downloadDiagnostics}
+                >
+                  <Download size={16} />
+                  Download numeric diagnostics
+                </button>
+                <p>
+                  Optional local file. No video, images, landmarks, eye
+                  features, or identity data. Nothing is uploaded.
+                </p>
+              </div>
             )}
             {message && (
               <div
@@ -631,45 +786,110 @@ export function CameraPanel(props: CameraPanelProps) {
               role="region"
               aria-label="Gaze calibration"
             >
-              <div
-                className="calibration-copy"
-                style={{ top: gazeState.target.y < 0.5 ? "72%" : "23%" }}
-              >
-                <span className="section-kicker">
-                  {gazeState.phase === "gaze"
-                    ? "GAZE CALIBRATION"
-                    : "INDEPENDENT CHECK"}
-                </span>
-                <h3>Look at the green point.</h3>
-                <p>Keep a comfortable, steady position. No clicking needed.</p>
-                <span aria-live="polite">
-                  {gazeState.pointIndex + 1} of {gazeState.targetCount}
-                </span>
-                {gazeState.message && <p role="status">{gazeState.message}</p>}
-                <button
-                  {...scanning("cancel")}
-                  className="secondary"
-                  autoFocus
-                  onClick={cancelCalibration}
-                >
-                  Cancel calibration
-                </button>
-              </div>
-              <div
-                className="calibration-target"
-                style={{
-                  left: `${gazeState.target.x * 100}%`,
-                  top: `${gazeState.target.y * 100}%`,
-                }}
-                aria-hidden="true"
-              >
-                <span
-                  style={{
-                    transform: `scale(${1 + gazeState.progress * 0.7})`,
-                  }}
-                />
-                <i />
-              </div>
+              {gazeState.phase === "ready" ? (
+                <div className="gaze-ready-card">
+                  <span className="section-kicker">BEFORE WE START</span>
+                  <h3>Teach the camera where you look.</h3>
+                  <p>
+                    This is eye tracking, not mind reading. A pretrained local
+                    model reads eye images; these points personalize its
+                    estimates to you.
+                  </p>
+                  <ol>
+                    <li>
+                      <strong>Get comfortable.</strong> Keep your face visible,
+                      with soft light in front of you. Stay in the posture you
+                      will use afterward.
+                    </li>
+                    <li>
+                      <strong>
+                        Follow the small green dot with your eyes.
+                      </strong>{" "}
+                      Look at its center until it moves. No clicks, gestures, or
+                      reading the instructions while a point is recording.
+                    </li>
+                    <li>
+                      <strong>9 points teach, then 5 points check.</strong> The
+                      ring fills only after the signal settles. Blink normally.
+                      Allow about one minute; points wait when tracking pauses.
+                    </li>
+                  </ol>
+                  <p className="gaze-ready-note">
+                    Nothing is recording yet. The independent check can reject
+                    an inaccurate setup. You can always use a single switch
+                    instead.
+                  </p>
+                  <div className="gaze-ready-actions">
+                    <button
+                      {...scanning("gaze-ready")}
+                      className="primary"
+                      autoFocus
+                      onClick={startGazeRecording}
+                    >
+                      Start gaze calibration <ArrowRight size={16} />
+                    </button>
+                    <button
+                      {...scanning("cancel")}
+                      className="secondary"
+                      onClick={cancelCalibration}
+                    >
+                      Cancel calibration
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div
+                    className="calibration-copy"
+                    style={{ top: gazeState.target.y < 0.5 ? "72%" : "23%" }}
+                  >
+                    <span className="section-kicker">
+                      {gazeState.phase === "gaze"
+                        ? "GAZE CALIBRATION"
+                        : "INDEPENDENT CHECK"}
+                    </span>
+                    <h3>Look at the green point.</h3>
+                    <p>
+                      Keep a comfortable, steady position. No clicking needed.
+                    </p>
+                    <span aria-live="polite">
+                      {gazeState.pointIndex + 1} of {gazeState.targetCount}
+                    </span>
+                    {gazeState.message && (
+                      <p role="status">{gazeState.message}</p>
+                    )}
+                    <progress
+                      aria-label="Current gaze point progress"
+                      value={gazeState.progress}
+                      max={1}
+                    />
+                    <button
+                      {...scanning("cancel")}
+                      className="secondary"
+                      autoFocus
+                      onClick={cancelCalibration}
+                    >
+                      Cancel calibration
+                    </button>
+                  </div>
+                  <div
+                    className="calibration-target"
+                    data-collection-status={gazeState.status}
+                    style={{
+                      left: `${gazeState.target.x * 100}%`,
+                      top: `${gazeState.target.y * 100}%`,
+                    }}
+                    aria-hidden="true"
+                  >
+                    <span
+                      style={{
+                        transform: `scale(${1 + gazeState.progress * 0.7})`,
+                      }}
+                    />
+                    <i />
+                  </div>
+                </>
+              )}
             </div>
           )}
         </Dialog>

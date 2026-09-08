@@ -4,7 +4,8 @@
  * Observation.quality is geometry/visibility, not confidence or measured gaze accuracy.
  * Observation.gesture is a one-shot event only after explicit neutral/action calibration.
  * Observation.gestureStrength exposes the selected raw blendshape for calibration.
- * Eight iris/head features feed fitCalibration; validate on separate held-out targets.
+ * Eighteen iris/head, pretrained eye-image and box features feed personal calibration.
+ * Validate on separate held-out targets; model inference is not proof of gaze accuracy.
  */
 export { CameraTracker, type CameraDiagnostics } from "./CameraTracker";
 export {

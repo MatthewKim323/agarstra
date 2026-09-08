@@ -31,9 +31,27 @@ const observation = (
   ],
 });
 
+const startedGaze = (now = 0) => {
+  const session = new GazeCalibrationSession(now);
+  session.start(now);
+  return session;
+};
+
 describe("complete gaze calibration workflow", () => {
-  it("requires every training target and all separate validation targets before exposing a model", () => {
+  it("waits for an explicit ready action without using up collection time", () => {
     const session = new GazeCalibrationSession(0);
+    session.update(observation(session.current.target, 60000), 60000);
+    expect(session.current.phase).toBe("ready");
+    expect(session.counts).toEqual({ training: 0, heldOut: 0 });
+    expect(session.model).toBe(null);
+    expect(session.start(60000).phase).toBe("gaze");
+    session.update(observation(session.current.target, 60100), 60100);
+    expect(session.current.phase).toBe("gaze");
+    expect(session.current.samplesAtTarget).toBe(0);
+    expect(session.start(60200).pointIndex).toBe(0);
+  });
+  it("requires every training target and all separate validation targets before exposing a model", () => {
+    const session = startedGaze();
     const seenTraining = new Set<number>();
     const seenValidation = new Set<number>();
     for (let now = 0; now <= 30000; now += 100) {
@@ -53,33 +71,33 @@ describe("complete gaze calibration workflow", () => {
     expect(session.counts.heldOut).toBeGreaterThanOrEqual(5 * 8);
   });
   it("cannot complete from a single reused frame", () => {
-    const session = new GazeCalibrationSession(0);
+    const session = startedGaze();
     const frame = observation(session.current.target, 700);
-    for (let now = 700; now <= 16000; now += 100) session.update(frame, now);
+    for (let now = 700; now <= 26000; now += 100) session.update(frame, now);
     expect(session.current.phase).toBe("failed");
     expect(session.counts.training).toBe(0);
     expect(session.model).toBe(null);
   });
   it("never skips a target with insufficient distinct samples", () => {
-    const session = new GazeCalibrationSession(0);
+    const session = startedGaze();
     session.update(observation(session.current.target, 0), 0);
     session.update(observation(session.current.target, 900), 900);
     session.update(observation(session.current.target, 1900), 1900);
     expect(session.current.pointIndex).toBe(0);
-    expect(session.current.samplesAtTarget).toBe(2);
+    expect(session.current.samplesAtTarget).toBe(0);
   });
   it("clears the current point on missing face and times out safely", () => {
-    const session = new GazeCalibrationSession(0);
+    const session = startedGaze();
     for (let now = 0; now <= 1000; now += 100)
       session.update(observation(session.current.target, now), now);
     expect(session.current.samplesAtTarget).toBeGreaterThan(0);
     session.update(null, 1100);
     expect(session.current.samplesAtTarget).toBe(0);
-    expect(session.update(null, 16000).phase).toBe("failed");
+    expect(session.update(null, 26000).phase).toBe("failed");
     expect(session.model).toBe(null);
   });
   it("does not leak a fitted model when held-out validation fails", () => {
-    const session = new GazeCalibrationSession(0);
+    const session = startedGaze();
     for (
       let now = 0;
       now <= 30000 && session.current.phase !== "done";
@@ -94,7 +112,142 @@ describe("complete gaze calibration workflow", () => {
     }
     expect(session.current.phase).toBe("done");
     expect(session.current.validation?.passed).toBe(false);
+    expect(session.current.validation?.targets).toHaveLength(5);
+    expect(session.current.message).toContain("exceeds");
+    expect(session.current.message).not.toContain("too variable");
     expect(session.model).toBe(null);
+  });
+  it("does not treat visible but alternating eye fixations as stable", () => {
+    const session = startedGaze();
+    for (let now = 0; now <= 5000; now += 100) {
+      const frame = observation(session.current.target, now);
+      frame.features = frame.features.map(
+        (value, index) => value + (index < 4 ? (now % 200 ? 0.09 : -0.09) : 0),
+      );
+      session.update(frame, now);
+    }
+    expect(session.current.phase).toBe("gaze");
+    expect(session.current.pointIndex).toBe(0);
+    expect(session.current.status).toBe("paused");
+    expect(session.counts.training).toBe(0);
+  });
+  it("explains a passing average with a failed tail without falsely calling it jitter", () => {
+    const session = startedGaze();
+    for (
+      let now = 0;
+      now <= 30000 && session.current.phase !== "done";
+      now += 100
+    ) {
+      const state = session.current;
+      const point =
+        state.phase === "validation" && state.pointIndex === 0
+          ? { x: state.target.x + 0.3, y: state.target.y }
+          : state.target;
+      session.update(observation(point, now), now);
+    }
+    expect(session.current.validation?.meanError).toBeLessThan(0.15);
+    expect(session.current.validation?.p95Error).toBeGreaterThan(0.255);
+    expect(session.current.validation?.failureReason).toBe("tail-error");
+    expect(session.current.message).toMatch(/average error [0-9.]+ passes/);
+    expect(session.current.message).toMatch(
+      /95th-percentile error [0-9.]+ exceeds 0.255/,
+    );
+    expect(session.current.validation?.targets[0].dispersion).toBeLessThan(
+      0.001,
+    );
+    expect(session.model).toBe(null);
+  });
+  it("discards an isolated saccade and restarts the current point without training on it", () => {
+    const session = startedGaze();
+    for (let now = 0; now <= 1100; now += 100)
+      session.update(observation(session.current.target, now), now);
+    expect(session.current.samplesAtTarget).toBeGreaterThan(0);
+    const outlier = observation(session.current.target, 1200);
+    outlier.features[0] += 1;
+    session.update(outlier, 1200);
+    expect(session.current.samplesAtTarget).toBe(0);
+    expect(session.current.status).toBe("paused");
+    for (
+      let now = 1300;
+      now <= 3000 && session.current.pointIndex === 0;
+      now += 100
+    )
+      session.update(observation(session.current.target, now), now);
+    expect(session.current.pointIndex).toBe(1);
+    const report = session.diagnosticReport({ width: 1200, height: 800 });
+    expect(report.collections[0].rejectedFrames).toBeGreaterThanOrEqual(1);
+    expect(report.collections[0].samples).toBeGreaterThanOrEqual(10);
+  });
+  it("does not accumulate stable time across a camera frame gap", () => {
+    const session = startedGaze();
+    for (let now = 0; now <= 1000; now += 100)
+      session.update(observation(session.current.target, now), now);
+    session.update(observation(session.current.target, 1600), 1600);
+    expect(session.current.samplesAtTarget).toBe(0);
+    expect(session.current.progress).toBe(0);
+  });
+  it("collects a stable fixation with ordinary small camera noise", () => {
+    const session = startedGaze();
+    for (
+      let now = 0;
+      now <= 2200 && session.current.pointIndex === 0;
+      now += 100
+    ) {
+      const frame = observation(session.current.target, now);
+      frame.features = frame.features.map(
+        (value, index) => value + Math.sin(now + index) * 0.002,
+      );
+      session.update(frame, now);
+    }
+    expect(session.current.pointIndex).toBe(1);
+  });
+  it("does not let high frame rates collapse the fixation window's duration", () => {
+    const session = startedGaze();
+    for (
+      let now = 0;
+      now <= 2500 && session.current.pointIndex === 0;
+      now += 10
+    )
+      session.update(observation(session.current.target, now), now);
+    expect(session.current.pointIndex).toBe(1);
+    expect(session.counts.training).toBeGreaterThanOrEqual(10);
+  });
+  it("accepts bounded expanded eye features but fails if their shape changes mid-run", () => {
+    const session = startedGaze();
+    for (let now = 0; now <= 1100; now += 100) {
+      const frame = observation(session.current.target, now);
+      frame.features.push(...Array(10).fill(now % 200 ? 1 : -1));
+      session.update(frame, now);
+    }
+    expect(session.current.samplesAtTarget).toBeGreaterThan(0);
+    session.update(observation(session.current.target, 1200), 1200);
+    expect(session.current.phase).toBe("failed");
+    expect(session.model).toBe(null);
+  });
+  it("exports target-level diagnostics without any biometric input arrays", () => {
+    const session = startedGaze();
+    for (
+      let now = 0;
+      now <= 30000 && session.current.phase !== "done";
+      now += 100
+    )
+      session.update(observation(session.current.target, now), now);
+    const report = session.diagnosticReport({ width: 1280, height: 800 });
+    expect(report.collections).toHaveLength(14);
+    expect(report.validation?.targets).toHaveLength(5);
+    expect(report.passed).toBe(true);
+    const serialized = JSON.stringify(report);
+    for (const field of [
+      "features",
+      "landmarks",
+      "image",
+      "video",
+      "weightsX",
+      "means",
+      "scales",
+    ])
+      expect(serialized).not.toContain(`"${field}"`);
+    expect(report.thresholds).toEqual({ meanError: 0.15, p95Error: 0.255 });
   });
   it("rejects a nonmonotonic clock instead of carrying elapsed dwell", () => {
     const session = new GazeCalibrationSession(1000);

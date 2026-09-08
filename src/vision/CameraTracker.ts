@@ -13,6 +13,12 @@ import {
   type GestureKind,
 } from "./gesture";
 import { createFaceDetector, type DetectorRuntime } from "./runtime";
+import {
+  createNeuralGazeRuntime,
+  type NeuralGaze,
+  type NeuralGazeRuntime,
+} from "./neural-gaze";
+import { NEURAL_FEATURE_COUNT } from "./eye-images";
 
 export interface CameraDiagnostics {
   running: boolean;
@@ -22,6 +28,8 @@ export interface CameraDiagnostics {
   gestureArmed: boolean;
   reason: string;
   frames: number;
+  gazeModel: string;
+  inferenceMs: number;
 }
 
 /** Explicit start only. One owned camera stream, no frame storage or network uploads. */
@@ -32,6 +40,7 @@ export class CameraTracker {
   private worker: Worker | null = null;
   private cancelInitialization: (() => void) | null = null;
   private runtime: DetectorRuntime | null = null;
+  private neural: NeuralGazeRuntime | null = null;
   private frame = 0;
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private busy = false;
@@ -53,6 +62,8 @@ export class CameraTracker {
     gestureArmed: false,
     reason: "Camera is off.",
     frames: 0,
+    gazeModel: "Peekr CNN + personal calibration",
+    inferenceMs: 0,
   };
 
   getDiagnostics(): CameraDiagnostics {
@@ -62,7 +73,7 @@ export class CameraTracker {
   setCalibration(model: CalibrationModel | null): void {
     if (model && !isCalibrationModel(model))
       throw new Error("Invalid gaze calibration.");
-    if (model && model.featureCount !== 8)
+    if (model && model.featureCount !== NEURAL_FEATURE_COUNT)
       throw new Error(
         "This camera profile uses an incompatible feature layout.",
       );
@@ -105,8 +116,8 @@ export class CameraTracker {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: "user",
-          width: { ideal: 640 },
-          height: { ideal: 480 },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
           frameRate: { ideal: 20, max: 30 },
         },
         audio: false,
@@ -121,7 +132,8 @@ export class CameraTracker {
       video.playsInline = true;
       await video.play();
       if (generation !== this.generation) return;
-      this.diagnostics.reason = "Loading the local face model.";
+      this.diagnostics.reason =
+        "Loading local face and pretrained gaze models.";
       await this.initializeDetector(generation);
       if (generation !== this.generation) return;
       this.diagnostics.running = true;
@@ -182,37 +194,35 @@ export class CameraTracker {
 
   stop(): void {
     this.generation++;
-    if (this.frame) cancelAnimationFrame(this.frame);
+    const frame = this.frame;
+    const watchdog = this.watchdog;
+    const cancel = this.cancelInitialization;
+    const worker = this.worker;
+    const runtime = this.runtime;
+    const neural = this.neural;
+    const stream = this.stream;
+    const video = this.video;
+    const observe = this.onObservation;
+    // Detach ownership before disposal, so an exception or reentrant stop cannot
+    // leave old resources attached to a new session.
     this.frame = 0;
-    if (this.watchdog) clearInterval(this.watchdog);
     this.watchdog = null;
-    this.cancelInitialization?.();
     this.cancelInitialization = null;
-    this.worker?.terminate();
     this.worker = null;
-    this.runtime?.detector.close();
     this.runtime = null;
-    this.stream?.getTracks().forEach((track) => track.stop());
+    this.neural = null;
+    this.calibration = null;
+    this.gestureConfig = null;
     this.stream = null;
-    if (this.video) this.video.srcObject = null;
     this.video = null;
+    this.onObservation = null;
+    this.onError = null;
     this.busy = false;
     this.lastVideoTime = -1;
     this.lastRequest = -Infinity;
     this.lastResult = -Infinity;
     this.smoother.reset();
     this.gesture.reset();
-    this.onObservation?.({
-      x: 0.5,
-      y: 0.5,
-      quality: 0,
-      timestamp: performance.now(),
-      gesture: false,
-      gestureStrength: 0,
-      features: [],
-    });
-    this.onObservation = null;
-    this.onError = null;
     this.diagnostics = {
       ...this.diagnostics,
       running: false,
@@ -220,7 +230,43 @@ export class CameraTracker {
       gestureArmed: false,
       reason: "Camera is off.",
       frames: 0,
+      calibrated: false,
+      gestureConfigured: false,
+      inferenceMs: 0,
     };
+    const release = (dispose: () => void) => {
+      try {
+        dispose();
+      } catch {
+        /* One teardown failure cannot block the rest. */
+      }
+    };
+    if (frame) release(() => cancelAnimationFrame(frame));
+    if (watchdog) release(() => clearInterval(watchdog));
+    // Stop hardware before closing WASM/model resources, even if their close throws.
+    release(() =>
+      stream?.getTracks().forEach((track) => release(() => track.stop())),
+    );
+    if (video)
+      release(() => {
+        video.srcObject = null;
+      });
+    if (cancel) release(cancel);
+    if (worker) release(() => worker.terminate());
+    if (runtime) release(() => runtime.detector.close());
+    if (neural) release(() => neural.close());
+    if (observe)
+      release(() =>
+        observe({
+          x: 0.5,
+          y: 0.5,
+          quality: 0,
+          timestamp: performance.now(),
+          gesture: false,
+          gestureStrength: 0,
+          features: [],
+        }),
+      );
   }
 
   private async initializeDetector(generation: number): Promise<void> {
@@ -238,16 +284,18 @@ export class CameraTracker {
         const delegate = await new Promise<string>((resolve, reject) => {
           const cleanup = () => {
             clearTimeout(timer);
-            this.cancelInitialization = null;
+            if (this.cancelInitialization === cancel)
+              this.cancelInitialization = null;
           };
           const timer = setTimeout(() => {
             cleanup();
             reject(new Error("Worker initialization timed out."));
-          }, 25000);
-          this.cancelInitialization = () => {
+          }, 45000);
+          const cancel = () => {
             cleanup();
             reject(new Error("Camera initialization cancelled."));
           };
+          this.cancelInitialization = cancel;
           worker!.onerror = () => {
             cleanup();
             reject(new Error("Worker initialization failed."));
@@ -280,19 +328,28 @@ export class CameraTracker {
             type: string;
             result?: FaceLandmarkerResult;
             timestamp?: number;
+            neural?: NeuralGaze | null;
             message?: string;
           }>,
         ) => {
           if (generation !== this.generation) return;
           this.busy = false;
-          if (
-            event.data.type === "result" &&
-            event.data.result &&
-            event.data.timestamp !== undefined
-          )
-            this.handleResult(event.data.result, event.data.timestamp);
-          else if (event.data.type === "error")
-            this.failRuntime(event.data.message ?? "Face detection failed.");
+          try {
+            if (
+              event.data.type === "result" &&
+              event.data.result &&
+              event.data.timestamp !== undefined
+            )
+              this.handleResult(
+                event.data.result,
+                event.data.timestamp,
+                event.data.neural ?? null,
+              );
+            else if (event.data.type === "error")
+              this.failRuntime(event.data.message ?? "Face detection failed.");
+          } catch (error) {
+            this.failRuntime(this.cameraError(error));
+          }
         };
         worker.onerror = () => {
           if (generation === this.generation)
@@ -300,7 +357,7 @@ export class CameraTracker {
               "The camera worker stopped. Restart the camera or use switch input.",
             );
         };
-        this.diagnostics.backend = `worker-${delegate.toLowerCase()}`;
+        this.diagnostics.backend = `worker-${delegate.toLowerCase()} + Peekr ONNX`;
         return;
       } catch {
         worker?.terminate();
@@ -309,20 +366,96 @@ export class CameraTracker {
       }
     }
     // Browser compatibility fallback. Runs at a bounded frame rate, never per paint.
-    let runtime: DetectorRuntime;
-    try {
-      runtime = await createFaceDetector();
-    } catch {
-      throw new Error(
-        "The local face model could not load. Run npm run setup to install vision assets, then retry in a current browser. Switch input remains available.",
-      );
-    }
+    const { runtime, neural } = await this.initializeFallback(generation);
     if (generation !== this.generation) {
       runtime.detector.close();
+      neural.close();
       return;
     }
     this.runtime = runtime;
-    this.diagnostics.backend = `main-${runtime.delegate.toLowerCase()}`;
+    this.neural = neural;
+    this.diagnostics.backend = `main-${runtime.delegate.toLowerCase()} + Peekr ONNX`;
+  }
+
+  /** Stop settles start immediately, even when a model factory cannot abort its own load. */
+  private initializeFallback(generation: number): Promise<{
+    runtime: DetectorRuntime;
+    neural: NeuralGazeRuntime;
+  }> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let ownedRuntime: DetectorRuntime | null = null;
+      let ownedNeural: NeuralGazeRuntime | null = null;
+      const cleanup = () => {
+        clearTimeout(timer);
+        if (this.cancelInitialization === cancel)
+          this.cancelInitialization = null;
+      };
+      const releaseOwned = () => {
+        const runtime = ownedRuntime;
+        const neural = ownedNeural;
+        ownedRuntime = null;
+        ownedNeural = null;
+        // A model cleanup error must not prevent cancellation or track cleanup.
+        try {
+          runtime?.detector.close();
+        } catch {
+          /* Already closing. */
+        }
+        try {
+          neural?.close();
+        } catch {
+          /* Already closing. */
+        }
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        releaseOwned();
+        reject(error);
+      };
+      const cancel = () => fail(new Error("Camera initialization cancelled."));
+      const timer = setTimeout(
+        () =>
+          fail(
+            new Error(
+              "Local vision model initialization timed out. Restart the camera or use switch input.",
+            ),
+          ),
+        45000,
+      );
+      this.cancelInitialization = cancel;
+
+      void (async () => {
+        try {
+          const runtime = await createFaceDetector();
+          if (settled || generation !== this.generation) {
+            runtime.detector.close();
+            return;
+          }
+          ownedRuntime = runtime;
+          const neural = await createNeuralGazeRuntime();
+          if (settled || generation !== this.generation) {
+            neural.close();
+            return;
+          }
+          ownedNeural = neural;
+          settled = true;
+          cleanup();
+          ownedRuntime = null;
+          ownedNeural = null;
+          resolve({ runtime, neural });
+        } catch (error) {
+          fail(
+            new Error(
+              "The local face or gaze model could not load. Run npm run setup to install vision assets, then retry in a current browser. Switch input remains available.",
+              { cause: error },
+            ),
+          );
+        }
+      })();
+    });
   }
 
   private async processFrame(
@@ -339,20 +472,40 @@ export class CameraTracker {
           return;
         }
         this.worker.postMessage({ type: "frame", bitmap, timestamp }, [bitmap]);
-      } else if (this.runtime) {
-        const result = this.runtime.detector.detectForVideo(video, timestamp);
+      } else if (this.runtime && this.neural) {
+        const neural = this.neural;
+        const mirrored = neural.images.mirror(
+          video,
+          video.videoWidth,
+          video.videoHeight,
+        );
+        const result = this.runtime.detector.detectForVideo(
+          mirrored,
+          timestamp,
+        );
+        const gaze = await neural.predict(
+          video,
+          video.videoWidth,
+          video.videoHeight,
+          result,
+        );
         if (generation === this.generation)
-          this.handleResult(result, timestamp);
-        this.busy = false;
+          this.handleResult(result, timestamp, gaze);
+        if (generation === this.generation) this.busy = false;
       }
     } catch (error) {
-      this.busy = false;
-      if (generation === this.generation)
+      if (generation === this.generation) {
+        this.busy = false;
         this.failRuntime(this.cameraError(error));
+      }
     }
   }
 
-  private handleResult(result: FaceLandmarkerResult, timestamp: number): void {
+  private handleResult(
+    result: FaceLandmarkerResult,
+    timestamp: number,
+    neural: NeuralGaze | null,
+  ): void {
     const now = performance.now();
     this.lastResult = now;
     this.diagnostics.frames++;
@@ -380,11 +533,35 @@ export class CameraTracker {
       );
       return;
     }
+    if (!neural) {
+      this.invalidate(
+        timestamp,
+        "Eye images are not usable yet. Face the screen with both eyes visible.",
+      );
+      return;
+    }
+    const features = [
+      ...face.features,
+      neural.raw.x,
+      neural.raw.y,
+      ...neural.keypoints,
+    ];
+    if (
+      features.length !== NEURAL_FEATURE_COUNT ||
+      features.some((value) => !Number.isFinite(value))
+    ) {
+      this.invalidate(
+        timestamp,
+        "The gaze model returned invalid features. Controls paused.",
+      );
+      return;
+    }
+    this.diagnostics.inferenceMs = neural.inferenceMs;
     this.diagnostics.reason = face.reason;
     const valid = face.quality >= 0.5;
     const rawPoint =
       this.calibration && valid
-        ? predictCalibration(this.calibration, face.features)
+        ? predictCalibration(this.calibration, features)
         : { x: 0.5, y: 0.5 };
     if (!valid) this.smoother.reset();
     const point = valid
@@ -402,7 +579,7 @@ export class CameraTracker {
       timestamp,
       gesture,
       gestureStrength,
-      features: face.features,
+      features,
     });
   }
 

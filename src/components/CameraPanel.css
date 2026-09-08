@@ -64,6 +64,179 @@
 .gesture-instruction > button {
   margin-top: 12px;
 }
+.gaze-ready-card {
+  position: absolute;
+  left: 50%;
+  top: 45%;
+  transform: translate(-50%, -50%);
+  width: min(620px, calc(100vw - 40px));
+  max-height: calc(100dvh - 150px);
+  padding: clamp(20px, 4vw, 34px);
+  overflow-y: auto;
+  border: 1px solid #cedbc2;
+  border-radius: 18px;
+  background: #ffffff;
+  color: #34462c;
+  box-shadow: 0 14px 50px #3245290a;
+}
+.gaze-ready-card h3 {
+  margin: 12px 0;
+  font-size: clamp(22px, 4vw, 30px);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+}
+.gaze-ready-card p,
+.gaze-ready-card li {
+  font-size: 13px;
+  line-height: 1.65;
+}
+.gaze-ready-card ol {
+  padding-left: 20px;
+  margin: 20px 0;
+}
+.gaze-ready-card li + li {
+  margin-top: 12px;
+}
+.gaze-ready-note {
+  padding: 12px;
+  background: #f0f5eb;
+  border-radius: 8px;
+}
+.gaze-ready-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+.calibration-copy {
+  width: min(360px, calc(100vw - 36px));
+  color: #425934;
+}
+.calibration-copy progress {
+  display: block;
+  width: 130px;
+  height: 5px;
+  margin: 10px auto 14px;
+  accent-color: #567e3d;
+}
+.calibration-target[data-collection-status="paused"] > span {
+  border-color: #b1833a;
+}
+.gaze-results {
+  margin-top: 22px;
+  padding: 18px;
+  border: 1px solid #d4decb;
+  border-radius: 12px;
+  background: #f7faf3;
+}
+.gaze-results h3 {
+  font-size: 16px;
+  color: #34462c;
+}
+.gaze-results .validation-result {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: #425934;
+}
+.gaze-results-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 14px;
+  align-items: center;
+  margin-top: 14px;
+}
+.gaze-error-map {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.gaze-error-map rect {
+  fill: #fff;
+  stroke: #d4decb;
+}
+.gaze-error-map .inside {
+  color: #3a6330;
+}
+.gaze-error-map .outside {
+  color: #985024;
+}
+.gaze-error-map line {
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.gaze-error-map .gaze-prediction {
+  fill: #fff;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.gaze-error-map .gaze-known-target {
+  fill: currentColor;
+}
+.gaze-error-map text {
+  fill: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  dominant-baseline: central;
+  text-anchor: middle;
+}
+.gaze-table-wrap {
+  overflow-x: auto;
+}
+.gaze-error-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+  color: #425934;
+  font-variant-numeric: tabular-nums;
+}
+.gaze-error-table caption {
+  text-align: left;
+  font-weight: 650;
+  padding-bottom: 7px;
+}
+.gaze-error-table th,
+.gaze-error-table td {
+  text-align: left;
+  padding: 7px 4px;
+  border-bottom: 1px solid #dce5d3;
+  white-space: nowrap;
+}
+.gaze-result-explanation,
+.gaze-retry-advice,
+.gaze-report-export p {
+  margin-top: 12px;
+  font-size: 11px;
+  line-height: 1.65;
+  color: #425934;
+}
+.gaze-retry-advice {
+  border-top: 1px solid #d4decb;
+  padding-top: 12px;
+}
+.gaze-report-export {
+  margin-top: 16px;
+}
+@media (max-width: 650px) {
+  .gaze-results-layout {
+    grid-template-columns: 1fr;
+  }
+  .gaze-error-map {
+    max-width: 300px;
+    margin-inline: auto;
+  }
+}
+@media (max-height: 700px) {
+  .calibration-copy h3 {
+    font-size: 17px;
+    margin: 6px 0;
+  }
+  .calibration-copy p,
+  .calibration-copy > span:not(.section-kicker) {
+    font-size: 10px;
+    margin: 6px 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .calibration-target > span {
     transform: none !important;

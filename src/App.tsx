@@ -1392,9 +1392,10 @@ export default function App() {
             </span>
           </div>
           <p className="dialog-intro">
-            Your webcam stays local. In live mode, browser screenshots and your
-            chosen task are sent to OpenAI. Only use accounts and data you’re
-            comfortable sharing.
+            Webcam video and eye features stay local. In live mode, browser
+            screenshots, your chosen task, and an optional coarse attention
+            point from pointer or calibrated gaze input are sent to OpenAI. Only
+            use accounts and data you’re comfortable sharing.
           </p>
           {!state.configured && (
             <div className="warning">
@@ -1425,8 +1426,8 @@ export default function App() {
               onChange={(e) => setConsent(e.target.checked)}
             />
             <span>
-              I consent to sharing this browser’s screenshots and task content
-              with OpenAI for this session.
+              I consent to sharing this browser’s screenshots, task content, and
+              optional coarse attention point with OpenAI for this session.
             </span>
           </label>
           <button
