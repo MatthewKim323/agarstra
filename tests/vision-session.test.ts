@@ -212,6 +212,119 @@ describe("complete gaze calibration workflow", () => {
     expect(session.current.pointIndex).toBe(1);
     expect(session.counts.training).toBeGreaterThanOrEqual(10);
   });
+  it.each([165, 200, 300, 333])(
+    "collects a genuinely stable target when frames arrive every %i ms",
+    (interval) => {
+      const session = startedGaze();
+      for (
+        let now = 0;
+        now <= 6000 && session.current.pointIndex === 0;
+        now += interval
+      ) {
+        session.update(observation(session.current.target, now), now);
+      }
+      expect(session.current.pointIndex).toBe(1);
+      expect(session.counts.training).toBeGreaterThanOrEqual(10);
+      expect(session.model).toBeNull();
+    },
+  );
+  it("does not reset collection when repeated UI polls age the previous delivered frame", () => {
+    const session = startedGaze();
+    // Model results arrive every 200 ms, with their original capture timestamp
+    // 200 ms earlier. The UI polls every 70 ms, including between results.
+    for (
+      let now = 0;
+      now <= 6000 && session.current.pointIndex === 0;
+      now += 70
+    ) {
+      const timestamp = Math.floor((now - 200) / 200) * 200;
+      session.update(
+        timestamp < 0 ? null : observation(session.current.target, timestamp),
+        now,
+      );
+    }
+    expect(session.current.pointIndex).toBe(1);
+    expect(session.counts.training).toBeGreaterThanOrEqual(10);
+  });
+  it("does not recount a recent delivery and still clears collection on a real arrival stall", () => {
+    const session = startedGaze();
+    for (let captured = 0; captured <= 1600; captured += 200)
+      session.update(
+        observation(session.current.target, captured),
+        captured + 200,
+      );
+    const held = observation(session.current.target, 1600);
+    const count = session.current.samplesAtTarget;
+    const progress = session.current.progress;
+    expect(count).toBeGreaterThan(0);
+    session.update(held, 2020);
+    expect(session.current.samplesAtTarget).toBe(count);
+    expect(session.current.progress).toBe(progress);
+    session.update(held, 2160);
+    expect(session.current.samplesAtTarget).toBe(0);
+    expect(session.current.progress).toBe(0);
+    expect(session.current.status).toBe("paused");
+  });
+  it("still rejects genuinely new captures that arrive too old", () => {
+    const session = startedGaze();
+    for (let now = 0; now <= 1000; now += 100)
+      session.update(observation(session.current.target, now), now);
+    expect(session.current.samplesAtTarget).toBeGreaterThan(0);
+    session.update(observation(session.current.target, 1100), 1460);
+    expect(session.current.samplesAtTarget).toBe(0);
+    expect(session.current.status).toBe("paused");
+  });
+  it("explains insufficient frame delivery without falsely blaming eye movement", () => {
+    const session = startedGaze();
+    for (let now = 0; now <= 26_000; now += 500)
+      session.update(observation(session.current.target, now), now);
+    expect(session.current.phase).toBe("failed");
+    expect(session.current.message).toContain(
+      "Not enough usable camera frames",
+    );
+    expect(session.current.message).not.toContain("steady eye signal");
+    expect(session.model).toBeNull();
+  });
+  it("still clears slow-frame collection for an actual lost face or saccade", () => {
+    for (const failure of ["face", "saccade"] as const) {
+      const session = startedGaze();
+      for (let now = 0; now <= 1500; now += 300)
+        session.update(observation(session.current.target, now), now);
+      expect(session.current.samplesAtTarget).toBeGreaterThan(0);
+      const lost = observation(session.current.target, 1800);
+      if (failure === "face") lost.quality = 0;
+      else lost.features[0] += 1;
+      session.update(lost, 1800);
+      expect(session.current.samplesAtTarget).toBe(0);
+      expect(session.current.progress).toBe(0);
+      expect(session.current.status).toBe("paused");
+    }
+  });
+  it("completes all fourteen independent targets with slow inference and frequent UI polling", () => {
+    const session = startedGaze();
+    let latest: Observation | null = null;
+    let nextCapture = 0;
+    for (
+      let now = 0;
+      now <= 100_000 && session.current.phase !== "done";
+      now += 70
+    ) {
+      while (nextCapture + 200 <= now) {
+        latest = observation(session.current.target, nextCapture);
+        nextCapture += 300;
+      }
+      session.update(latest, now);
+    }
+    const report = session.diagnosticReport({ width: 1440, height: 900 });
+    expect(session.current.phase).toBe("done");
+    expect(session.current.validation?.passed).toBe(true);
+    expect(report.collections).toHaveLength(14);
+    expect(report.collections.every((target) => target.samples >= 10)).toBe(
+      true,
+    );
+    expect(report.validation?.targets).toHaveLength(5);
+    expect(report.thresholds).toEqual({ meanError: 0.15, p95Error: 0.255 });
+  });
   it("accepts bounded expanded eye features but fails if their shape changes mid-run", () => {
     const session = startedGaze();
     for (let now = 0; now <= 1100; now += 100) {

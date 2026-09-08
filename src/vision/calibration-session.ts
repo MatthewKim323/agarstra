@@ -61,6 +61,8 @@ const median = (values: number[]): number => {
 
 /** Eye-local iris/head geometry only. Eye appearance dimensions are not motion. */
 const MOTION_SCALES = [0.025, 0.02, 0.025, 0.02, 0.02, 0.02, 0.015, 0.015];
+export const GAZE_SAMPLE_MAX_AGE_MS = 350;
+export const GAZE_FRAME_MAX_GAP_MS = 350;
 
 function fixationWindow(
   window: Observation[],
@@ -107,7 +109,7 @@ function freshObservation(
     Number.isFinite(now) &&
     Number.isFinite(observation.timestamp) &&
     now - observation.timestamp >= -50 &&
-    now - observation.timestamp <= 350 &&
+    now - observation.timestamp <= GAZE_SAMPLE_MAX_AGE_MS &&
     observation.quality >= 0.5 &&
     observation.quality <= 1 &&
     observation.features.length >= 2 &&
@@ -124,6 +126,7 @@ export class GazeCalibrationSession {
   private lastNow: number;
   private lastSample = -Infinity;
   private lastFrame = -Infinity;
+  private lastFrameReceivedAt = -Infinity;
   private featureCount: number | null = null;
   private window: Observation[] = [];
   private collectionStarted: number | null = null;
@@ -259,8 +262,20 @@ export class GazeCalibrationSession {
     if (this.state.phase === "ready") return this.current;
     if (now - this.targetStarted > this.targetTimeoutMs)
       return this.fail(
-        `Could not collect a steady eye signal at ${this.state.phase === "gaze" ? "training" : "check"} point ${this.state.pointIndex + 1}. This is a tracking limitation, not a failed instruction. Try softer front lighting, reduce glasses glare, or use switch input.`,
+        this.pointSamples.length === 0 && this.rejectedFrames === 0
+          ? `Not enough usable camera frames arrived at ${this.state.phase === "gaze" ? "training" : "check"} point ${this.state.pointIndex + 1}. The camera may be too slow or your face may not be visible. Check the live signal, close other video apps, or use switch input.`
+          : `Could not collect a steady eye signal at ${this.state.phase === "gaze" ? "training" : "check"} point ${this.state.pointIndex + 1}. This is a tracking limitation, not a failed instruction. Try softer front lighting, reduce glasses glare, or use switch input.`,
       );
+    // The UI polls faster than inference. An already accepted result is not a
+    // new stale capture just because another poll sees it between arrivals.
+    // This does not record it again, advance time/progress, or change its stamp.
+    if (
+      observation !== null &&
+      observation.timestamp === this.lastFrame &&
+      now - this.lastFrameReceivedAt <= GAZE_FRAME_MAX_GAP_MS &&
+      freshObservation(observation, this.lastFrameReceivedAt)
+    )
+      return this.current;
     if (!freshObservation(observation, now)) {
       this.trackingLosses++;
       this.epoch = now;
@@ -282,7 +297,7 @@ export class GazeCalibrationSession {
     if (observation.timestamp - this.lastFrame < 50) return this.current;
     if (
       Number.isFinite(this.lastFrame) &&
-      observation.timestamp - this.lastFrame > 350
+      observation.timestamp - this.lastFrame > GAZE_FRAME_MAX_GAP_MS
     ) {
       this.window = [];
       this.pointSamples = [];
@@ -297,15 +312,17 @@ export class GazeCalibrationSession {
         "The camera feature format changed during calibration. Please restart camera setup.",
       );
     this.lastFrame = observation.timestamp;
+    this.lastFrameReceivedAt = now;
     this.window = [
       ...this.window,
       {
         ...observation,
         features: [...observation.features],
       },
-    ]
-      .filter((frame) => observation.timestamp - frame.timestamp <= 650)
-      .slice(-7);
+    ].slice(-7);
+    // A count-bounded window supports slower inference. The fresh-capture and
+    // capture-gap checks above bound its age without making five frames
+    // mathematically impossible below 6.15 FPS.
     const elapsed = now - this.epoch;
     const fixation = fixationWindow(this.window, observation);
     if (fixation === "moving" || fixation === "outlier") {
