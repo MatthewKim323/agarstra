@@ -1,5 +1,5 @@
 /**
- * Download only public Google model assets; never requests camera access.
+ * Download pinned public Google and MIT Peekr model assets; never requests camera access.
  * MediaPipe code is Apache-2.0. Model source/model card and license details:
  * https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/index#models
  * https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
@@ -27,6 +27,12 @@ const source =
 const expectedSha256 =
   "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff";
 const temporary = `${modelPath}.download-${process.pid}`;
+const neuralPath = join(target, "peekr.onnx");
+const neuralTemporary = `${neuralPath}.download-${process.pid}`;
+const neuralSource =
+  "https://raw.githubusercontent.com/HugoFara/peekr/d3ea61e4a34ce9463d83979c286ba9a8712b514a/public/peekr.onnx";
+const neuralSha256 =
+  "9abc6c98ee02ee518da98777d1cd879ff9bbaf71491ed2c803a608e9740ce7fb";
 
 try {
   await mkdir(target, { recursive: true });
@@ -35,6 +41,64 @@ try {
     join(target, "wasm"),
     { recursive: true },
   );
+  const onnxTarget = join(target, "onnx");
+  await mkdir(onnxTarget, { recursive: true });
+  for (const file of [
+    "ort-wasm-simd-threaded.wasm",
+    "ort-wasm-simd-threaded.mjs",
+  ]) {
+    await cp(
+      join(root, "node_modules", "onnxruntime-web", "dist", file),
+      join(onnxTarget, file),
+    );
+  }
+  await cp(
+    join(root, "THIRD_PARTY_NOTICES.md"),
+    join(target, "THIRD_PARTY_NOTICES.md"),
+  );
+  const neuralPresent = await readFile(neuralPath)
+    .then(
+      (bytes) =>
+        createHash("sha256").update(bytes).digest("hex") === neuralSha256,
+    )
+    .catch(() => false);
+  if (!neuralPresent) {
+    console.log(
+      "Downloading the pinned MIT Peekr pretrained gaze model for local inference...",
+    );
+    const response = await fetch(neuralSource, {
+      signal: AbortSignal.timeout(90000),
+    });
+    if (!response.ok)
+      throw new Error(`Gaze model download returned HTTP ${response.status}.`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (
+      bytes.length !== 579176 ||
+      createHash("sha256").update(bytes).digest("hex") !== neuralSha256
+    )
+      throw new Error(
+        "Gaze model integrity check failed; no new gaze model was installed.",
+      );
+    await writeFile(neuralTemporary, bytes, { flag: "wx" });
+    await rename(neuralTemporary, neuralPath);
+  }
+  await writeFile(
+    join(target, "gaze-model-source.json"),
+    JSON.stringify(
+      {
+        source: neuralSource,
+        sha256: neuralSha256,
+        bytes: 579176,
+        license: "MIT",
+        runtime: "onnxruntime-web@1.29.0",
+        preprocessing: "mirrored detection, original BGR eye crops, 128x128",
+        note: "Model output requires independent personal calibration. Upstream accuracy is not Nerve validation.",
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  console.log("Local Peekr gaze model and ONNX WASM assets are ready.");
   const present = await readFile(modelPath)
     .then(
       (bytes) =>
@@ -84,6 +148,7 @@ try {
   }
 } catch (error) {
   await unlink(temporary).catch(() => {});
+  await unlink(neuralTemporary).catch(() => {});
   console.error(
     `Vision setup unavailable: ${error instanceof Error ? error.message : error}`,
   );
