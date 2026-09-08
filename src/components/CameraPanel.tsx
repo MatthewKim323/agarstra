@@ -15,8 +15,21 @@ import type { Observation } from "../../shared/types";
 import { Dialog } from "./Dialog";
 import { CameraTracker } from "../vision/CameraTracker";
 import { NEURAL_FEATURE_COUNT } from "../vision/eye-images";
-import type { GestureKind } from "../vision/gesture";
-import type { CalibrationValidation } from "../vision/calibration";
+import type { GestureConfig, GestureKind } from "../vision/gesture";
+import type {
+  CalibrationModel,
+  CalibrationValidation,
+} from "../vision/calibration";
+import {
+  clearGazeProfile,
+  compareGazeEnvironment,
+  isGazeEnvironment,
+  loadGazeProfile,
+  saveGazeProfile,
+  type GazeActivation,
+  type GazeEnvironment,
+  type SavedGazeProfile,
+} from "../core/gaze-profile";
 import {
   GazeCalibrationSession,
   GestureCalibrationSession,
@@ -35,6 +48,9 @@ type CameraPanelProps = {
   onClose: () => void;
   onObservation: (observation: Observation) => void;
   onReady: (ready: boolean) => void;
+  onActivationChange?: (activation: GazeActivation) => void;
+  onRememberChange?: (remember: boolean) => void;
+  dwellMs?: number;
   onStop: (stop: () => void) => void;
   onError: (message: string) => void;
 };
@@ -44,6 +60,9 @@ type SignalSummary = {
   usablePerSecond: number;
   lastUsableArrivalAgeMs: number | null;
   meanCaptureDelayMs: number | null;
+  lastCaptureLatencyMs: number | null;
+  totalResults: number;
+  staleResults: number;
   inferenceMs: number;
   usableObservations: number;
   backend: string;
@@ -54,6 +73,9 @@ const EMPTY_SIGNAL: SignalSummary = {
   usablePerSecond: 0,
   lastUsableArrivalAgeMs: null,
   meanCaptureDelayMs: null,
+  lastCaptureLatencyMs: null,
+  totalResults: 0,
+  staleResults: 0,
   inferenceMs: 0,
   usableObservations: 0,
   backend: "off",
@@ -77,6 +99,14 @@ export function CameraPanel(props: CameraPanelProps) {
   const gazePassedRef = useRef(false);
   const stopRef = useRef<() => void>(() => {});
   const viewport = useRef({ width: 0, height: 0 });
+  const sessionEnvironment = useRef<GazeEnvironment | null>(null);
+  const checkedCalibration = useRef<{
+    model: CalibrationModel;
+    environment: GazeEnvironment;
+    validation: CalibrationValidation;
+    checkedAt: number;
+  } | null>(null);
+  const gestureConfig = useRef<GestureConfig | null>(null);
   const switchOptIn = useRef<HTMLButtonElement>(null);
   const signalSamples = useRef<{ capture: number; arrival: number }[]>([]);
   const lastUsableCapture = useRef(-Infinity);
@@ -89,6 +119,23 @@ export function CameraPanel(props: CameraPanelProps) {
   const [quality, setQuality] = useState(0);
   const [faceStatus, setFaceStatus] = useState("Camera is off.");
   const [kind, setKind] = useState<GestureKind>("jawOpen");
+  const [savedLoad] = useState(loadGazeProfile);
+  const [savedProfile, setSavedProfile] = useState(savedLoad.profile);
+  const [remember, setRemember] = useState(savedLoad.status === "saved");
+  const [activation, setActivation] = useState<GazeActivation>(
+    savedLoad.profile?.activation ?? "dwell",
+  );
+  const rememberRef = useRef(remember);
+  const activationRef = useRef(activation);
+  rememberRef.current = remember;
+  activationRef.current = activation;
+  const [profileNotice, setProfileNotice] = useState(
+    savedLoad.status === "invalid"
+      ? "Saved calibration is incompatible or damaged. Calibrate again before using gaze."
+      : savedLoad.status === "unavailable"
+        ? "Browser storage is unavailable. You can still calibrate for this session."
+        : "",
+  );
   const [validation, setValidation] = useState<CalibrationValidation | null>(
     null,
   );
@@ -138,6 +185,17 @@ export function CameraPanel(props: CameraPanelProps) {
       inferenceMs: Number.isFinite(diagnostics?.inferenceMs)
         ? Math.round(diagnostics!.inferenceMs)
         : 0,
+      lastCaptureLatencyMs:
+        diagnostics?.lastCaptureLatencyMs != null &&
+        Number.isFinite(diagnostics.lastCaptureLatencyMs)
+          ? Math.max(0, Math.round(diagnostics.lastCaptureLatencyMs))
+          : null,
+      totalResults: Number.isFinite(diagnostics?.totalResults)
+        ? Math.max(0, Math.floor(diagnostics!.totalResults))
+        : 0,
+      staleResults: Number.isFinite(diagnostics?.staleResults)
+        ? Math.max(0, Math.floor(diagnostics!.staleResults))
+        : 0,
       usableObservations: usableObservations.current,
       backend: diagnostics?.backend ?? "off",
     };
@@ -166,10 +224,81 @@ export function CameraPanel(props: CameraPanelProps) {
     callbacks.current.onReady(ready);
   }, []);
 
+  useEffect(() => {
+    callbacks.current.onActivationChange?.(activation);
+  }, [activation]);
+
+  const persistCalibration = useCallback(() => {
+    const checked = checkedCalibration.current;
+    if (!rememberRef.current || !checked?.validation.passed) return;
+    const now = Date.now();
+    const profile: SavedGazeProfile = {
+      version: 1,
+      model: checked.model,
+      gesture: gestureConfig.current,
+      activation: activationRef.current,
+      dwellMs: callbacks.current.dwellMs ?? 850,
+      savedAt: now,
+      environment: checked.environment,
+      lastValidation: {
+        checkedAt: checked.checkedAt,
+        meanError: checked.validation.meanError,
+        p95Error: checked.validation.p95Error,
+        sampleCount: checked.validation.sampleCount,
+      },
+    };
+    if (saveGazeProfile(profile)) {
+      setSavedProfile(profile);
+      setProfileNotice(
+        "Calibration saved on this device. A fresh five-point check is required next time.",
+      );
+    } else {
+      setProfileNotice(
+        "Could not save calibration. It remains available for this camera session only.",
+      );
+    }
+  }, []);
+
+  const changeRemember = (enabled: boolean) => {
+    rememberRef.current = enabled;
+    setRemember(enabled);
+    callbacks.current.onRememberChange?.(enabled);
+    if (enabled) {
+      setProfileNotice(
+        "A successfully checked calibration will be saved on this device.",
+      );
+      persistCalibration();
+    } else if (clearGazeProfile()) {
+      setSavedProfile(null);
+      setProfileNotice(
+        "Saved setup and learning removed from this device. The current camera setup and session learning remain available until stopped or reloaded.",
+      );
+    } else {
+      setProfileNotice(
+        "Could not remove the saved calibration from browser storage. Clear this site's stored data to remove it.",
+      );
+    }
+  };
+
+  const changeActivation = (mode: GazeActivation) => {
+    activationRef.current = mode;
+    setActivation(mode);
+    tracker.current?.setGesture(
+      mode === "gesture" ? gestureConfig.current : null,
+    );
+    setReady(
+      gazePassedRef.current &&
+        (mode === "dwell" || Boolean(gestureConfig.current)),
+    );
+    persistCalibration();
+  };
+
   const invalidateCalibration = useCallback(() => {
     clearSession();
     tracker.current?.setCalibration(null);
     tracker.current?.setGesture(null);
+    checkedCalibration.current = null;
+    gestureConfig.current = null;
     gazePassedRef.current = false;
     setReady(false);
     if (mounted.current) {
@@ -189,6 +318,7 @@ export function CameraPanel(props: CameraPanelProps) {
     const current = tracker.current;
     tracker.current = null;
     current?.stop();
+    sessionEnvironment.current = null;
     latest.current = null;
     signalSamples.current = [];
     lastUsableCapture.current = lastUsableArrival.current = -Infinity;
@@ -241,10 +371,12 @@ export function CameraPanel(props: CameraPanelProps) {
 
   useEffect(() => {
     const resize = () => {
+      const current = tracker.current?.getEnvironment();
+      const previous = sessionEnvironment.current;
       if (
-        !tracker.current ||
-        (viewport.current.width === window.innerWidth &&
-          viewport.current.height === window.innerHeight)
+        !previous ||
+        !current ||
+        compareGazeEnvironment(previous, current).compatible
       )
         return;
       viewport.current = {
@@ -252,13 +384,21 @@ export function CameraPanel(props: CameraPanelProps) {
         height: window.innerHeight,
       };
       invalidateCalibration();
+      sessionEnvironment.current = isGazeEnvironment(current) ? current : null;
       const notice =
-        "Screen dimensions changed. Gaze controls are disabled until you recalibrate.";
+        "Camera or screen configuration changed. Gaze controls are disabled until you recalibrate.";
       setMessage(notice);
       callbacks.current.onError(notice);
     };
+    const preview = video.current;
     window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
+    window.visualViewport?.addEventListener("resize", resize);
+    preview?.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      window.visualViewport?.removeEventListener("resize", resize);
+      preview?.removeEventListener("resize", resize);
+    };
   }, [invalidateCalibration]);
 
   const close = useCallback(() => {
@@ -284,6 +424,29 @@ export function CameraPanel(props: CameraPanelProps) {
         video.current,
         (observation) => {
           if (generation.current !== token || !mounted.current) return;
+          const currentEnvironment = t.getEnvironment();
+          const previousEnvironment = sessionEnvironment.current;
+          if (
+            previousEnvironment &&
+            currentEnvironment &&
+            !compareGazeEnvironment(previousEnvironment, currentEnvironment)
+              .compatible
+          ) {
+            invalidateCalibration();
+            sessionEnvironment.current = isGazeEnvironment(currentEnvironment)
+              ? currentEnvironment
+              : null;
+            const notice =
+              "Camera or screen configuration changed. Gaze controls are disabled until you recalibrate.";
+            setMessage(notice);
+            callbacks.current.onError(notice);
+            callbacks.current.onObservation({
+              ...observation,
+              quality: 0,
+              gesture: false,
+            });
+            return;
+          }
           latest.current = observation;
           const arrival = performance.now();
           const valid =
@@ -346,6 +509,21 @@ export function CameraPanel(props: CameraPanelProps) {
         return;
       }
       setRunning(t.getDiagnostics().running);
+      const environment = t.getEnvironment();
+      sessionEnvironment.current = isGazeEnvironment(environment)
+        ? environment
+        : null;
+      if (savedProfile && environment) {
+        const match = compareGazeEnvironment(
+          savedProfile.environment,
+          environment,
+        );
+        setProfileNotice(
+          match.compatible
+            ? "Saved calibration found. Run the five-point check before using it."
+            : `Saved calibration does not match this ${match.reason === "viewport" ? "screen size or zoom" : match.reason === "camera" ? "camera" : "camera configuration"}. Run a new calibration.`,
+        );
+      }
     } catch (error) {
       if (generation.current === token && mounted.current) {
         stop();
@@ -368,10 +546,30 @@ export function CameraPanel(props: CameraPanelProps) {
     );
   }, [invalidateCalibration]);
 
-  const beginGaze = () => {
+  const beginGaze = (saved?: SavedGazeProfile) => {
     if (!tracker.current?.getDiagnostics().running) return;
+    const environment = tracker.current.getEnvironment();
+    if (!isGazeEnvironment(environment)) {
+      setMessage(
+        "Waiting for camera dimensions before calibration. Try again when the preview is visible.",
+      );
+      return;
+    }
+    if (
+      saved &&
+      !compareGazeEnvironment(saved.environment, environment).compatible
+    ) {
+      setMessage(
+        "The saved calibration does not match this camera and screen. Start a new calibration.",
+      );
+      return;
+    }
     invalidateCalibration();
-    const session = new GazeCalibrationSession(performance.now());
+    sessionEnvironment.current = environment;
+    const session = new GazeCalibrationSession(
+      performance.now(),
+      saved ? { validationModel: saved.model } : {},
+    );
     active.current = { kind: "gaze", session };
     setGazeState(session.current);
     setMessage("");
@@ -387,14 +585,47 @@ export function CameraPanel(props: CameraPanelProps) {
         ...session.diagnosticReport(viewport.current),
         cameraSignal: readSignal(performance.now()),
       });
-      const passed = Boolean(session.model && state.validation?.passed);
+      const currentEnvironment = tracker.current?.getEnvironment();
+      const environmentMatches = Boolean(
+        currentEnvironment &&
+          compareGazeEnvironment(environment, currentEnvironment).compatible,
+      );
+      const passed = Boolean(
+        session.model && state.validation?.passed && environmentMatches,
+      );
       tracker.current?.setCalibration(passed ? session.model : null);
       gazePassedRef.current = passed;
       setGazePassed(passed);
+      if (passed && session.model && state.validation) {
+        checkedCalibration.current = {
+          model: session.model,
+          environment,
+          validation: state.validation,
+          checkedAt: Date.now(),
+        };
+        gestureConfig.current = saved?.gesture ?? null;
+        if (gestureConfig.current) {
+          tracker.current?.setGesture(
+            activationRef.current === "gesture" ? gestureConfig.current : null,
+          );
+          setKind(gestureConfig.current.kind);
+        }
+        setGesturePassed(Boolean(gestureConfig.current));
+        setReady(
+          activationRef.current === "dwell" || Boolean(gestureConfig.current),
+        );
+        persistCalibration();
+      }
       setMessage(
         passed
-          ? "Independent gaze check passed for large controls. Next, teach your deliberate signal."
-          : state.message,
+          ? activationRef.current === "dwell"
+            ? "Independent gaze check passed. Continue to check the large gaze controls. No facial gesture is required."
+            : gestureConfig.current
+              ? "Saved gaze and gesture settings are ready. Relax your face before selecting a control."
+              : "Independent gaze check passed. Teach a deliberate gesture, or choose eyes-only dwell."
+          : environmentMatches
+            ? state.message
+            : "Camera or screen configuration changed during the check. Recalibrate before using gaze.",
       );
     }, 70);
   };
@@ -424,6 +655,7 @@ export function CameraPanel(props: CameraPanelProps) {
       return;
     clearSession();
     tracker.current.setGesture(null);
+    gestureConfig.current = null;
     tracker.current.setGestureKind(kind);
     setGesturePassed(false);
     setReady(false);
@@ -440,8 +672,10 @@ export function CameraPanel(props: CameraPanelProps) {
       setGestureState(null);
       const passed = Boolean(session.config && gazePassedRef.current);
       tracker.current?.setGesture(passed ? session.config : null);
+      gestureConfig.current = passed ? session.config : null;
       setGesturePassed(passed);
       setReady(passed);
+      if (passed) persistCalibration();
       setMessage(
         passed
           ? "Your input is ready. Relax your face, then look at a control and hold your deliberate gesture to select it."
@@ -465,7 +699,9 @@ export function CameraPanel(props: CameraPanelProps) {
     let index = 0;
     const controls = () =>
       Array.from(
-        document.querySelectorAll<HTMLButtonElement>("[data-camera-scan]"),
+        document.querySelectorAll<HTMLButtonElement | HTMLInputElement>(
+          "[data-camera-scan]",
+        ),
       )
         .filter(
           (button) =>
@@ -505,7 +741,7 @@ export function CameraPanel(props: CameraPanelProps) {
         event.code !== "Space" ||
         event.repeat ||
         (event.target as HTMLElement)?.closest(
-          'input,textarea,select,[contenteditable="true"]',
+          'input:not([data-camera-scan]),textarea,select,[contenteditable="true"]',
         )
       )
         return;
@@ -583,6 +819,28 @@ export function CameraPanel(props: CameraPanelProps) {
             </output>
           </div>
         )}
+        <div>
+          <span>Latest capture delay</span>
+          <output
+            aria-live="off"
+            aria-label="Latest capture delay"
+            data-testid="camera-capture-delay"
+          >
+            {signal.lastCaptureLatencyMs === null
+              ? "Waiting"
+              : `${signal.lastCaptureLatencyMs} ms`}
+          </output>
+        </div>
+        <div>
+          <span>Stale results</span>
+          <output
+            aria-live="off"
+            aria-label="Stale camera results"
+            data-testid="camera-stale-results"
+          >
+            {signal.staleResults} / {signal.totalResults}
+          </output>
+        </div>
         {!compact && (
           <div>
             <span>Model inference</span>
@@ -621,6 +879,17 @@ export function CameraPanel(props: CameraPanelProps) {
         ? "raise your eyebrows gently"
         : "smile gently";
   const isCalibrating = Boolean(gazeState || gestureState);
+  const inputReady = gazePassed && (activation === "dwell" || gesturePassed);
+  const rechecking =
+    active.current?.kind === "gaze" &&
+    active.current.session.kind === "recheck";
+  const currentEnvironment = tracker.current?.getEnvironment();
+  const savedCompatible = Boolean(
+    savedProfile &&
+      currentEnvironment &&
+      compareGazeEnvironment(savedProfile.environment, currentEnvironment)
+        .compatible,
+  );
 
   return (
     <>
@@ -692,9 +961,65 @@ export function CameraPanel(props: CameraPanelProps) {
               <div>
                 <p className="dialog-intro">
                   A local eye-image model estimates where you look. Personal
-                  calibration adjusts it to your camera and posture. Gaze
-                  highlights a choice; a deliberate gesture selects it.
+                  calibration adjusts it to your camera and posture. Eyes-only
+                  dwell selects large controls after a separate control check.
                 </p>
+                <div
+                  className="gesture-options"
+                  role="group"
+                  aria-label="Gaze activation"
+                >
+                  <button
+                    {...scanning("activation-dwell")}
+                    className={activation === "dwell" ? "selected" : ""}
+                    aria-pressed={activation === "dwell"}
+                    disabled={isCalibrating || busy}
+                    onClick={() => changeActivation("dwell")}
+                  >
+                    Eyes only
+                  </button>
+                  <button
+                    {...scanning("activation-gesture")}
+                    className={activation === "gesture" ? "selected" : ""}
+                    aria-pressed={activation === "gesture"}
+                    disabled={isCalibrating || busy}
+                    onClick={() => changeActivation("gesture")}
+                  >
+                    Gaze + gesture
+                  </button>
+                </div>
+                <p className="subtle">
+                  {activation === "dwell"
+                    ? "Look steadily at a large control to select it. Look away between selections. No facial gesture is required."
+                    : "Look at a control and hold your taught facial gesture to select it."}
+                </p>
+                <label>
+                  <input
+                    {...scanning("remember")}
+                    type="checkbox"
+                    checked={remember}
+                    onChange={(event) => changeRemember(event.target.checked)}
+                  />{" "}
+                  Remember me on this device
+                </label>
+                <p className="subtle">
+                  Save gaze calibration and learn from your confirmed choices
+                  across visits.
+                </p>
+                {profileNotice && (
+                  <p className="subtle" role="status">
+                    {profileNotice}
+                  </p>
+                )}
+                {(savedProfile || savedLoad.status === "invalid") && (
+                  <button
+                    {...scanning("forget-calibration")}
+                    className="secondary"
+                    onClick={() => changeRemember(false)}
+                  >
+                    Clear saved setup and learning
+                  </button>
+                )}
                 <div className="camera-steps">
                   <div className={running ? "checked" : ""}>
                     <span>{running ? <CheckCircle2 size={17} /> : "1"}</span>
@@ -704,12 +1029,14 @@ export function CameraPanel(props: CameraPanelProps) {
                     <span>{gazePassed ? <CheckCircle2 size={17} /> : "2"}</span>
                     <p>Calibrate and independently check gaze</p>
                   </div>
-                  <div className={gesturePassed ? "checked" : ""}>
-                    <span>
-                      {gesturePassed ? <CheckCircle2 size={17} /> : "3"}
-                    </span>
-                    <p>Teach a deliberate gesture</p>
-                  </div>
+                  {activation === "gesture" && (
+                    <div className={gesturePassed ? "checked" : ""}>
+                      <span>
+                        {gesturePassed ? <CheckCircle2 size={17} /> : "3"}
+                      </span>
+                      <p>Teach a deliberate gesture</p>
+                    </div>
+                  )}
                 </div>
                 {!running ? (
                   <button
@@ -726,19 +1053,32 @@ export function CameraPanel(props: CameraPanelProps) {
                     Enable camera
                   </button>
                 ) : (
-                  <button
-                    {...scanning("gaze")}
-                    className="secondary full"
-                    disabled={isCalibrating}
-                    onClick={beginGaze}
-                  >
-                    <ScanEye size={17} />
-                    {gazePassed ? "Recalibrate gaze" : "Calibrate gaze"}
-                  </button>
+                  <>
+                    {savedProfile && savedCompatible && (
+                      <button
+                        {...scanning("recheck")}
+                        className="primary full"
+                        disabled={isCalibrating}
+                        onClick={() => beginGaze(savedProfile)}
+                      >
+                        <CheckCircle2 size={17} />
+                        Check saved calibration
+                      </button>
+                    )}
+                    <button
+                      {...scanning("gaze")}
+                      className="secondary full"
+                      disabled={isCalibrating}
+                      onClick={() => beginGaze()}
+                    >
+                      <ScanEye size={17} />
+                      {gazePassed ? "Recalibrate gaze" : "Calibrate gaze"}
+                    </button>
+                  </>
                 )}
               </div>
             </div>
-            {running && (
+            {running && activation === "gesture" && (
               <div className="gesture-setup">
                 <h3>Your deliberate signal</h3>
                 <p>
@@ -763,6 +1103,7 @@ export function CameraPanel(props: CameraPanelProps) {
                         setKind(gesture.id);
                         tracker.current?.setGestureKind(gesture.id);
                         tracker.current?.setGesture(null);
+                        gestureConfig.current = null;
                         setGesturePassed(false);
                         setReady(false);
                       }}
@@ -958,10 +1299,10 @@ export function CameraPanel(props: CameraPanelProps) {
             )}
             {message && (
               <div
-                className={`camera-message ${gazePassed && gesturePassed ? "good" : ""}`}
+                className={`camera-message ${inputReady ? "good" : ""}`}
                 role="status"
               >
-                {gazePassed && gesturePassed ? (
+                {inputReady ? (
                   <CheckCircle2 size={17} />
                 ) : (
                   <AlertTriangle size={17} />
@@ -982,9 +1323,7 @@ export function CameraPanel(props: CameraPanelProps) {
                 Stop camera
               </button>
               <button {...scanning("back")} className="primary" onClick={close}>
-                {gazePassed && gesturePassed
-                  ? "Use calibrated input"
-                  : "Back to workspace"}
+                {inputReady ? "Check gaze controls" : "Back to workspace"}
                 <ArrowRight size={16} />
               </button>
             </div>
@@ -1005,11 +1344,15 @@ export function CameraPanel(props: CameraPanelProps) {
               {gazeState.phase === "ready" ? (
                 <div className="gaze-ready-card">
                   <span className="section-kicker">BEFORE WE START</span>
-                  <h3>Teach the camera where you look.</h3>
+                  <h3>
+                    {rechecking
+                      ? "Check your saved calibration."
+                      : "Teach the camera where you look."}
+                  </h3>
                   <p>
-                    This is eye tracking, not mind reading. A pretrained local
-                    model reads eye images; these points personalize its
-                    estimates to you.
+                    {rechecking
+                      ? "These points check your saved gaze model in your current position. The model stays fixed throughout the check."
+                      : "A pretrained local model reads eye images; these points personalize its estimates to you."}
                   </p>
                   <ol>
                     <li>
@@ -1025,9 +1368,16 @@ export function CameraPanel(props: CameraPanelProps) {
                       reading the instructions while a point is recording.
                     </li>
                     <li>
-                      <strong>9 points teach, then 5 points check.</strong> The
-                      ring fills only after the signal settles. Blink normally.
-                      Allow about one minute; points wait when tracking pauses.
+                      <strong>
+                        {rechecking
+                          ? "5 points check your saved model."
+                          : "9 points teach, then 5 points check."}
+                      </strong>{" "}
+                      The ring fills only after the signal settles. Blink
+                      normally.
+                      {rechecking
+                        ? " Nothing retrains during this check."
+                        : " Allow about one minute; points wait when tracking pauses."}
                     </li>
                   </ol>
                   <p className="gaze-ready-note">
@@ -1043,7 +1393,10 @@ export function CameraPanel(props: CameraPanelProps) {
                       autoFocus
                       onClick={startGazeRecording}
                     >
-                      Start gaze calibration <ArrowRight size={16} />
+                      {rechecking
+                        ? "Start saved gaze check"
+                        : "Start gaze calibration"}{" "}
+                      <ArrowRight size={16} />
                     </button>
                     <button
                       {...scanning("cancel")}

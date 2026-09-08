@@ -86,12 +86,15 @@ describe("complete gaze calibration workflow", () => {
     expect(session.current.pointIndex).toBe(0);
     expect(session.current.samplesAtTarget).toBe(0);
   });
-  it("clears the current point on missing face and times out safely", () => {
+  it("clears the current point after a prolonged missing face and times out safely", () => {
     const session = startedGaze();
     for (let now = 0; now <= 1000; now += 100)
       session.update(observation(session.current.target, now), now);
     expect(session.current.samplesAtTarget).toBeGreaterThan(0);
+    const accepted = session.current.samplesAtTarget;
     session.update(null, 1100);
+    expect(session.current.samplesAtTarget).toBe(accepted);
+    session.update(null, 1701);
     expect(session.current.samplesAtTarget).toBe(0);
     expect(session.update(null, 26000).phase).toBe("failed");
     expect(session.model).toBe(null);
@@ -182,9 +185,12 @@ describe("complete gaze calibration workflow", () => {
     const session = startedGaze();
     for (let now = 0; now <= 1000; now += 100)
       session.update(observation(session.current.target, now), now);
+    const accepted = session.current.samplesAtTarget;
+    const progress = session.current.progress;
     session.update(observation(session.current.target, 1600), 1600);
-    expect(session.current.samplesAtTarget).toBe(0);
-    expect(session.current.progress).toBe(0);
+    expect(session.current.samplesAtTarget).toBe(accepted);
+    expect(session.current.progress).toBe(progress);
+    expect(session.current.status).toBe("settling");
   });
   it("collects a stable fixation with ordinary small camera noise", () => {
     const session = startedGaze();
@@ -261,6 +267,10 @@ describe("complete gaze calibration workflow", () => {
     expect(session.current.samplesAtTarget).toBe(count);
     expect(session.current.progress).toBe(progress);
     session.update(held, 2160);
+    expect(session.current.samplesAtTarget).toBe(count);
+    expect(session.current.progress).toBe(progress);
+    expect(session.current.status).toBe("paused");
+    session.update(held, 2501);
     expect(session.current.samplesAtTarget).toBe(0);
     expect(session.current.progress).toBe(0);
     expect(session.current.status).toBe("paused");
@@ -270,9 +280,14 @@ describe("complete gaze calibration workflow", () => {
     for (let now = 0; now <= 1000; now += 100)
       session.update(observation(session.current.target, now), now);
     expect(session.current.samplesAtTarget).toBeGreaterThan(0);
+    const accepted = session.current.samplesAtTarget;
+    const progress = session.current.progress;
     session.update(observation(session.current.target, 1100), 1460);
-    expect(session.current.samplesAtTarget).toBe(0);
+    expect(session.current.samplesAtTarget).toBe(accepted);
+    expect(session.current.progress).toBe(progress);
     expect(session.current.status).toBe("paused");
+    session.update(observation(session.current.target, 1200), 1701);
+    expect(session.current.samplesAtTarget).toBe(0);
   });
   it("explains insufficient frame delivery without falsely blaming eye movement", () => {
     const session = startedGaze();
@@ -285,7 +300,7 @@ describe("complete gaze calibration workflow", () => {
     expect(session.current.message).not.toContain("steady eye signal");
     expect(session.model).toBeNull();
   });
-  it("still clears slow-frame collection for an actual lost face or saccade", () => {
+  it("still clears slow-frame collection for a prolonged lost face or immediate saccade", () => {
     for (const failure of ["face", "saccade"] as const) {
       const session = startedGaze();
       for (let now = 0; now <= 1500; now += 300)
@@ -295,6 +310,10 @@ describe("complete gaze calibration workflow", () => {
       if (failure === "face") lost.quality = 0;
       else lost.features[0] += 1;
       session.update(lost, 1800);
+      if (failure === "face") {
+        expect(session.current.samplesAtTarget).toBeGreaterThan(0);
+        session.update(null, 2250);
+      }
       expect(session.current.samplesAtTarget).toBe(0);
       expect(session.current.progress).toBe(0);
       expect(session.current.status).toBe("paused");

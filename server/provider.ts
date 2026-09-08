@@ -2,6 +2,11 @@ import { z } from "zod";
 import type { Candidate, ComputerAction, Point } from "../shared/types";
 import { parseActions, VIEWPORT } from "./actions";
 import { AppError } from "./errors";
+import {
+  loadPersonalContext,
+  personalContextPrompt,
+  type PersonalContext,
+} from "./personal-context";
 
 export type ProviderTurn = {
   output: unknown[];
@@ -29,6 +34,7 @@ export class AstraProvider implements ComputerProvider {
   constructor(
     private apiKey = process.env.OPENAI_API_KEY ?? "",
     private request: typeof fetch = fetch,
+    private personalContext: PersonalContext | null = loadPersonalContext(),
   ) {
     this.configured = Boolean(apiKey.trim());
     this.model = "gpt-6-astra";
@@ -225,9 +231,11 @@ export class AstraProvider implements ComputerProvider {
             content: [
               {
                 type: "input_text",
-                text: point
-                  ? `The user indicated a coarse region near (${point.x.toFixed(2)}, ${point.y.toFixed(2)}). Suggest next intents.`
-                  : "Suggest three useful next intents for this screen.",
+                text:
+                  (point
+                    ? `The user indicated a coarse region near (${point.x.toFixed(2)}, ${point.y.toFixed(2)}). Suggest next intents.`
+                    : "Suggest three useful next intents for this screen.") +
+                  personalContextPrompt(this.personalContext),
               },
               {
                 type: "input_image",

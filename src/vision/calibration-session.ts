@@ -1,6 +1,7 @@
 import type { CalibrationSample, Observation, Point } from "../../shared/types";
 import {
   fitCalibration,
+  isCalibrationModel,
   validateCalibration,
   type CalibrationModel,
   type CalibrationValidation,
@@ -63,6 +64,7 @@ const median = (values: number[]): number => {
 const MOTION_SCALES = [0.025, 0.02, 0.025, 0.02, 0.02, 0.02, 0.015, 0.015];
 export const GAZE_SAMPLE_MAX_AGE_MS = 350;
 export const GAZE_FRAME_MAX_GAP_MS = 350;
+export const GAZE_BRIEF_INTERRUPTION_MS = 700;
 
 function fixationWindow(
   window: Observation[],
@@ -129,7 +131,10 @@ export class GazeCalibrationSession {
   private lastFrameReceivedAt = -Infinity;
   private featureCount: number | null = null;
   private window: Observation[] = [];
-  private collectionStarted: number | null = null;
+  private collectedMs = 0;
+  private collectionLastSample: number | null = null;
+  private interrupted = false;
+  private recoveryAnchor: Observation[] | null = null;
   private rejectedFrames = 0;
   private trackingLosses = 0;
   private targetDiagnostics: GazeTargetDiagnostic[] = [];
@@ -137,21 +142,35 @@ export class GazeCalibrationSession {
   private training: CalibrationSample[] = [];
   private heldOut: CalibrationSample[] = [];
   private fitted: CalibrationModel | null = null;
+  readonly kind: "calibration" | "recheck";
   readonly minimumSamples = 10;
   readonly settleMs = 650;
   readonly collectMs = 1150;
   readonly targetTimeoutMs = 25000;
 
-  constructor(now: number) {
+  constructor(
+    now: number,
+    options: { validationModel?: CalibrationModel } = {},
+  ) {
     if (!Number.isFinite(now))
       throw new Error("Invalid calibration timestamp.");
     this.epoch = this.targetStarted = this.lastNow = now;
+    this.kind =
+      options.validationModel === undefined ? "calibration" : "recheck";
+    if (options.validationModel !== undefined) {
+      if (!isCalibrationModel(options.validationModel))
+        throw new Error("The saved gaze calibration is invalid.");
+      this.fitted = structuredClone(options.validationModel);
+      this.featureCount = this.fitted.featureCount;
+    }
+    const targets =
+      this.kind === "recheck" ? GAZE_VALIDATION_TARGETS : GAZE_TRAIN_TARGETS;
     this.state = {
       phase: "ready",
       status: "ready",
       pointIndex: 0,
-      target: GAZE_TRAIN_TARGETS[0],
-      targetCount: GAZE_TRAIN_TARGETS.length,
+      target: targets[0],
+      targetCount: targets.length,
       progress: 0,
       samplesAtTarget: 0,
       message:
@@ -178,7 +197,7 @@ export class GazeCalibrationSession {
     this.epoch = this.targetStarted = this.lastNow = now;
     this.state = {
       ...this.state,
-      phase: "gaze",
+      phase: this.kind === "recheck" ? "validation" : "gaze",
       status: "settling",
       message:
         "Look at the center of the point. The ring fills only while your eye signal is steady.",
@@ -191,6 +210,7 @@ export class GazeCalibrationSession {
     const fit = this.fitted?.trainingDiagnostics;
     return {
       schema: "nerve-gaze-diagnostics-v1",
+      kind: this.kind,
       viewport: {
         width: Math.round(
           Math.max(0, Number.isFinite(viewport.width) ? viewport.width : 0),
@@ -278,17 +298,13 @@ export class GazeCalibrationSession {
       return this.current;
     if (!freshObservation(observation, now)) {
       this.trackingLosses++;
-      this.epoch = now;
-      this.window = [];
-      this.collectionStarted = null;
-      this.pointSamples = [];
+      this.pauseCollection(now);
       this.state = {
         ...this.state,
-        progress: 0,
-        samplesAtTarget: 0,
         status: "paused",
-        message:
-          "Tracking paused. Blink naturally; look back at the point when your eyes are visible.",
+        message: this.pointSamples.length
+          ? "Tracking paused. Accepted samples are kept briefly. Look back at the point when your eyes are visible."
+          : "Tracking paused. Blink naturally; look back at the point when your eyes are visible.",
       };
       return this.current;
     }
@@ -299,11 +315,18 @@ export class GazeCalibrationSession {
       Number.isFinite(this.lastFrame) &&
       observation.timestamp - this.lastFrame > GAZE_FRAME_MAX_GAP_MS
     ) {
-      this.window = [];
-      this.pointSamples = [];
-      this.collectionStarted = null;
+      this.pauseCollection(now);
+    }
+    if (this.interrupted) {
+      if (
+        now - this.lastFrameReceivedAt > GAZE_BRIEF_INTERRUPTION_MS ||
+        observation.timestamp - this.lastFrame > GAZE_BRIEF_INTERRUPTION_MS
+      )
+        this.resetPointCollection();
+      // A fresh stable run is required after every interruption. Time without
+      // eye observations and the new settling period never count as collection.
       this.epoch = now;
-      this.state.progress = this.state.samplesAtTarget = 0;
+      this.interrupted = false;
     }
     if (this.featureCount === null)
       this.featureCount = observation.features.length;
@@ -324,11 +347,21 @@ export class GazeCalibrationSession {
     // capture-gap checks above bound its age without making five frames
     // mathematically impossible below 6.15 FPS.
     const elapsed = now - this.epoch;
+    const continuity = this.recoveryAnchor
+      ? fixationWindow(
+          [...this.recoveryAnchor.slice(-6), observation],
+          observation,
+        )
+      : "stable";
     const fixation = fixationWindow(this.window, observation);
-    if (fixation === "moving" || fixation === "outlier") {
+    if (
+      fixation === "moving" ||
+      fixation === "outlier" ||
+      continuity === "moving" ||
+      continuity === "outlier"
+    ) {
       this.rejectedFrames++;
-      this.pointSamples = [];
-      this.collectionStarted = null;
+      this.resetPointCollection();
       this.state = {
         ...this.state,
         samplesAtTarget: 0,
@@ -356,25 +389,23 @@ export class GazeCalibrationSession {
       observation.timestamp >= this.epoch + this.settleMs
     ) {
       this.lastSample = observation.timestamp;
-      if (this.collectionStarted === null)
-        this.collectionStarted = observation.timestamp;
+      this.recoveryAnchor = null;
+      if (this.collectionLastSample !== null)
+        this.collectedMs += observation.timestamp - this.collectionLastSample;
+      this.collectionLastSample = observation.timestamp;
       this.pointSamples.push({
         features: [...observation.features],
         target: { ...this.state.target },
       });
       this.state.samplesAtTarget = this.pointSamples.length;
     }
-    const collectedMs =
-      this.collectionStarted === null
-        ? 0
-        : observation.timestamp - this.collectionStarted;
     this.state.progress = Math.min(
       1,
-      collectedMs / this.collectMs,
+      this.collectedMs / this.collectMs,
       this.pointSamples.length / this.minimumSamples,
     );
     if (
-      collectedMs < this.collectMs ||
+      this.collectedMs < this.collectMs ||
       this.pointSamples.length < this.minimumSamples
     )
       return this.current;
@@ -394,7 +425,10 @@ export class GazeCalibrationSession {
     else this.heldOut.push(...this.pointSamples);
     this.pointSamples = [];
     this.window = [];
-    this.collectionStarted = null;
+    this.collectedMs = 0;
+    this.collectionLastSample = null;
+    this.interrupted = false;
+    this.recoveryAnchor = null;
     this.rejectedFrames = this.trackingLosses = 0;
     this.epoch = this.targetStarted = now;
     if (this.state.pointIndex + 1 < targets.length) {
@@ -478,6 +512,22 @@ export class GazeCalibrationSession {
       );
     }
     return this.current;
+  }
+  private resetPointCollection(): void {
+    this.pointSamples = [];
+    this.collectedMs = 0;
+    this.collectionLastSample = null;
+    this.recoveryAnchor = null;
+    this.state.progress = this.state.samplesAtTarget = 0;
+  }
+  private pauseCollection(now: number): void {
+    if (!this.interrupted && this.pointSamples.length && !this.recoveryAnchor)
+      this.recoveryAnchor = [...this.window];
+    this.interrupted = true;
+    this.window = [];
+    this.collectionLastSample = null;
+    if (now - this.lastFrameReceivedAt > GAZE_BRIEF_INTERRUPTION_MS)
+      this.resetPointCollection();
   }
   private fail(message: string): GazeCalibrationState {
     this.fitted = null;

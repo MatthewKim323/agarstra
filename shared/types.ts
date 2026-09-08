@@ -70,6 +70,12 @@ export type SessionState = {
   maxSteps: number;
   screenConsent: boolean;
 };
+export type CandidateResponse = {
+  candidates: Candidate[];
+  source: "practice" | "astra";
+  /** The exact observed state that these suggestions describe. */
+  state: SessionState;
+};
 export type Observation = {
   x: number;
   y: number;

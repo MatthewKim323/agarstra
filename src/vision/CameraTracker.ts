@@ -18,7 +18,20 @@ import {
   type NeuralGaze,
   type NeuralGazeRuntime,
 } from "./neural-gaze";
-import { NEURAL_FEATURE_COUNT } from "./eye-images";
+import { localCanvas, NEURAL_FEATURE_COUNT } from "./eye-images";
+
+export const CAMERA_PIPELINE_VERSION = "peekr-18-mirrored-bgr-v2";
+export interface CameraEnvironment {
+  deviceId: string | null;
+  captureWidth: number;
+  captureHeight: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  devicePixelRatio: number;
+  viewportScale: number;
+  pipelineVersion: string;
+  featureCount: number;
+}
 
 export interface CameraDiagnostics {
   running: boolean;
@@ -30,6 +43,11 @@ export interface CameraDiagnostics {
   frames: number;
   gazeModel: string;
   inferenceMs: number;
+  /** Capture request to result arrival, including image, face and neural work. */
+  lastCaptureLatencyMs: number | null;
+  totalResults: number;
+  /** Received captures rejected by the tracker's unchanged 450 ms age gate. */
+  staleResults: number;
 }
 
 /** Explicit start only. One owned camera stream, no frame storage or network uploads. */
@@ -41,6 +59,7 @@ export class CameraTracker {
   private cancelInitialization: (() => void) | null = null;
   private runtime: DetectorRuntime | null = null;
   private neural: NeuralGazeRuntime | null = null;
+  private fallbackCapture: ReturnType<typeof localCanvas> | null = null;
   private frame = 0;
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private busy = false;
@@ -64,10 +83,59 @@ export class CameraTracker {
     frames: 0,
     gazeModel: "Peekr CNN + personal calibration",
     inferenceMs: 0,
+    lastCaptureLatencyMs: null,
+    totalResults: 0,
+    staleResults: 0,
   };
 
   getDiagnostics(): CameraDiagnostics {
     return { ...this.diagnostics, gestureArmed: this.gesture.isArmed };
+  }
+
+  /** Actual capture/viewport settings for explicitly retained profile checks. */
+  getEnvironment(): CameraEnvironment | null {
+    if (!this.diagnostics.running || !this.stream || !this.video) return null;
+    const track = this.stream.getVideoTracks()[0];
+    if (!track || track.readyState === "ended") return null;
+    let settings: MediaTrackSettings = {};
+    try {
+      settings = track.getSettings?.() ?? {};
+    } catch {
+      // Some browsers withhold device details; unknown identity must stay unknown.
+    }
+    const dimension = (value: unknown): number =>
+      typeof value === "number" &&
+      Number.isInteger(value) &&
+      value > 0 &&
+      value <= 16384
+        ? value
+        : 0;
+    const captureWidth =
+      dimension(this.video.videoWidth) || dimension(settings.width);
+    const captureHeight =
+      dimension(this.video.videoHeight) || dimension(settings.height);
+    if (!captureWidth || !captureHeight) return null;
+    const viewport = typeof window === "undefined" ? null : window;
+    const positive = (value: unknown): number =>
+      typeof value === "number" && Number.isFinite(value) && value > 0
+        ? value
+        : 1;
+    return {
+      deviceId:
+        typeof settings.deviceId === "string" &&
+        settings.deviceId.length > 0 &&
+        settings.deviceId.length <= 4096
+          ? settings.deviceId
+          : null,
+      captureWidth,
+      captureHeight,
+      viewportWidth: dimension(viewport?.innerWidth),
+      viewportHeight: dimension(viewport?.innerHeight),
+      devicePixelRatio: positive(viewport?.devicePixelRatio),
+      viewportScale: positive(viewport?.visualViewport?.scale),
+      pipelineVersion: CAMERA_PIPELINE_VERSION,
+      featureCount: NEURAL_FEATURE_COUNT,
+    };
   }
 
   setCalibration(model: CalibrationModel | null): void {
@@ -200,6 +268,7 @@ export class CameraTracker {
     const worker = this.worker;
     const runtime = this.runtime;
     const neural = this.neural;
+    const fallbackCapture = this.fallbackCapture;
     const stream = this.stream;
     const video = this.video;
     const observe = this.onObservation;
@@ -211,6 +280,7 @@ export class CameraTracker {
     this.worker = null;
     this.runtime = null;
     this.neural = null;
+    this.fallbackCapture = null;
     this.calibration = null;
     this.gestureConfig = null;
     this.stream = null;
@@ -233,6 +303,9 @@ export class CameraTracker {
       calibrated: false,
       gestureConfigured: false,
       inferenceMs: 0,
+      lastCaptureLatencyMs: null,
+      totalResults: 0,
+      staleResults: 0,
     };
     const release = (dispose: () => void) => {
       try {
@@ -250,6 +323,15 @@ export class CameraTracker {
     if (video)
       release(() => {
         video.srcObject = null;
+      });
+    if (fallbackCapture)
+      release(() => {
+        const { canvas, context } = fallbackCapture;
+        try {
+          context.clearRect(0, 0, canvas.width, canvas.height);
+        } finally {
+          canvas.width = canvas.height = 1;
+        }
       });
     if (cancel) release(cancel);
     if (worker) release(() => worker.terminate());
@@ -474,19 +556,28 @@ export class CameraTracker {
         this.worker.postMessage({ type: "frame", bitmap, timestamp }, [bitmap]);
       } else if (this.runtime && this.neural) {
         const neural = this.neural;
-        const mirrored = neural.images.mirror(
-          video,
-          video.videoWidth,
-          video.videoHeight,
-        );
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        // Freeze one source frame. Face detection can take long enough for the
+        // live video to advance before neural eye crops are read.
+        const capture = (this.fallbackCapture ??= localCanvas(width, height));
+        if (
+          capture.canvas.width !== width ||
+          capture.canvas.height !== height
+        ) {
+          capture.canvas.width = width;
+          capture.canvas.height = height;
+        }
+        capture.context.drawImage(video, 0, 0, width, height);
+        const mirrored = neural.images.mirror(capture.canvas, width, height);
         const result = this.runtime.detector.detectForVideo(
           mirrored,
           timestamp,
         );
         const gaze = await neural.predict(
-          video,
-          video.videoWidth,
-          video.videoHeight,
+          capture.canvas,
+          width,
+          height,
           result,
         );
         if (generation === this.generation)
@@ -509,7 +600,17 @@ export class CameraTracker {
     const now = performance.now();
     this.lastResult = now;
     this.diagnostics.frames++;
-    if (now - timestamp > 450 || document.hidden) {
+    this.diagnostics.totalResults++;
+    const latency = now - timestamp;
+    this.diagnostics.lastCaptureLatencyMs = Number.isFinite(latency)
+      ? Math.max(0, latency)
+      : null;
+    this.diagnostics.inferenceMs =
+      neural && Number.isFinite(neural.inferenceMs)
+        ? Math.max(0, neural.inferenceMs)
+        : 0;
+    if (latency > 450) this.diagnostics.staleResults++;
+    if (latency > 450 || document.hidden) {
       this.invalidate(now, "Camera observations are stale. Controls paused.");
       return;
     }
@@ -556,7 +657,6 @@ export class CameraTracker {
       );
       return;
     }
-    this.diagnostics.inferenceMs = neural.inferenceMs;
     this.diagnostics.reason = face.reason;
     const valid = face.quality >= 0.5;
     const rawPoint =

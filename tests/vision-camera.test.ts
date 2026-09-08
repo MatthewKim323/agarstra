@@ -25,6 +25,18 @@ describe("camera consent and lifecycle", () => {
   beforeEach(() => {
     vi.stubGlobal("Worker", undefined);
     vi.stubGlobal(
+      "OffscreenCanvas",
+      class {
+        constructor(
+          public width: number,
+          public height: number,
+        ) {}
+        getContext() {
+          return { drawImage: vi.fn(), clearRect: vi.fn() };
+        }
+      },
+    );
+    vi.stubGlobal(
       "requestAnimationFrame",
       vi.fn(() => 1),
     );

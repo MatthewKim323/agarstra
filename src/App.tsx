@@ -43,6 +43,13 @@ import type {
 import { api } from "./api";
 import { Dialog, EMERGENCY_STOP_EVENT } from "./components/Dialog";
 import { CameraPanel } from "./components/CameraPanel";
+import { EyesIntentFlow } from "./components/EyesIntentFlow";
+import {
+  IntentLearningDialog,
+  IntentLearningStatus,
+} from "./components/IntentLearning";
+import { useIntentLearning } from "./use-intent-learning";
+import { NONE_ID, type IntentSnapshot } from "./core/intent-learning";
 import { IntentEngine, DwellController } from "./core";
 import {
   scanControls,
@@ -97,6 +104,7 @@ const DEFAULTS: Candidate[] = [
     risk: "confirm",
   },
 ];
+const NO_CANDIDATES: Candidate[] = [];
 type Preferences = {
   scanMs: number;
   voice: boolean;
@@ -164,17 +172,27 @@ export default function App() {
     [input, setInput] = useState<InputMode>("pointer"),
     [paused, setPaused] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[]>(DEFAULTS),
+    [candidatesRevision, setCandidatesRevision] = useState(0),
     [source, setSource] = useState("practice"),
     [selected, setSelected] = useState<string | null>(null),
     [focus, setFocus] = useState<Point | null>(null),
     [tab, setTab] = useState<"workspace" | "activity">("workspace");
   const [modal, setModal] = useState<
-      "settings" | "camera" | "help" | "astra" | "custom" | null
+      | "settings"
+      | "camera"
+      | "help"
+      | "astra"
+      | "custom"
+      | "intent-learning"
+      | null
     >(null),
     [prefs, setPrefs] = useState(readPreferences),
     [scanId, setScanId] = useState(""),
     [cameraObs, setCameraObs] = useState<Observation | null>(null),
     [cameraReady, setCameraReady] = useState(false),
+    [cameraActivation, setCameraActivation] = useState<"dwell" | "gesture">(
+      "dwell",
+    ),
     [cameraTracking, setCameraTracking] = useState(false),
     [custom, setCustom] = useState(""),
     [url, setUrl] = useState(""),
@@ -183,6 +201,7 @@ export default function App() {
     [ambiguity, setAmbiguity] = useState("");
   const screen = useRef<HTMLDivElement>(null),
     requestEpoch = useRef(0),
+    requestPending = useRef(false),
     stateRef = useRef(state),
     pausedRef = useRef(paused),
     modalRef = useRef(modal),
@@ -190,15 +209,51 @@ export default function App() {
     scanRef = useRef(""),
     lastInput = useRef(-Infinity),
     cameraObsRef = useRef<Observation | null>(null),
+    cameraActivationRef = useRef(cameraActivation),
     lastGaze = useRef({ id: "", since: 0 }),
     cameraStop = useRef<(() => void) | null>(null),
     pollAlive = useRef(true);
+  const selectedDecision = useRef<{
+    revision: number;
+    id: string;
+    snapshot: IntentSnapshot | null;
+  } | null>(null);
+  const customDecision = useRef<{
+    revision: number;
+    snapshot: IntentSnapshot | null;
+  } | null>(null);
+  const working = state.status === "thinking" || state.status === "executing",
+    started = !!state.screenshot,
+    proposal = state.proposal,
+    choice = candidates.find((c) => c.id === selected),
+    canAct = started && !busy && !working && !paused && !proposal,
+    currentCandidates =
+      source === state.mode &&
+      (source === "practice" || candidatesRevision === state.revision);
+  const intentLearning = useIntentLearning({
+    candidates: currentCandidates ? candidates : NO_CANDIDATES,
+    context: {
+      mode: state.mode,
+      input,
+      url: state.url,
+      title: state.title,
+      focus,
+    },
+    revision: state.revision,
+    eligible: canAct && currentCandidates,
+    observing: canAct && currentCandidates && !modal && !selected,
+  });
+  const learningRef = useRef(intentLearning);
+  learningRef.current = intentLearning;
   stateRef.current = state;
   pausedRef.current = paused;
   modalRef.current = modal;
   inputRef.current = input;
   scanRef.current = scanId;
   cameraObsRef.current = cameraObs;
+  cameraActivationRef.current = cameraActivation;
+  const eyesOnly =
+    input === "camera" && cameraReady && cameraActivation === "dwell";
   useEffect(() => {
     pollAlive.current = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -207,7 +262,11 @@ export default function App() {
       const epoch = requestEpoch.current;
       try {
         const s = await api.state();
-        if (!ended && epoch === requestEpoch.current) {
+        if (
+          !ended &&
+          epoch === requestEpoch.current &&
+          !requestPending.current
+        ) {
           setState((current) => (s.revision >= current.revision ? s : current));
           setOnline(true);
         }
@@ -241,13 +300,23 @@ export default function App() {
     [prefs.voice],
   );
   const perform = useCallback(
-    async (fn: () => Promise<SessionState>, notice?: string) => {
+    async (
+      fn: () => Promise<SessionState>,
+      notice?: string,
+      accepted?: () => void,
+    ) => {
       const epoch = ++requestEpoch.current;
+      requestPending.current = true;
       setBusy(true);
       setError("");
       try {
         const result = await fn();
-        if (epoch !== requestEpoch.current) return;
+        if (
+          epoch !== requestEpoch.current ||
+          result.revision < stateRef.current.revision
+        )
+          return;
+        accepted?.();
         setState((current) =>
           result.revision >= current.revision ? result : current,
         );
@@ -257,12 +326,18 @@ export default function App() {
         if (epoch !== requestEpoch.current) return;
         setError(e instanceof Error ? e.message : "Something went wrong.");
       } finally {
-        if (epoch === requestEpoch.current) setBusy(false);
+        if (epoch === requestEpoch.current) {
+          requestPending.current = false;
+          setBusy(false);
+        }
       }
     },
     [speak],
   );
   const stop = useCallback(() => {
+    learningRef.current.invalidate();
+    selectedDecision.current = null;
+    customDecision.current = null;
     setPaused(true);
     setSelected(null);
     setScanId("");
@@ -352,7 +427,13 @@ export default function App() {
         ?.setAttribute("data-scanning", "true");
   }, [scanId]);
   useEffect(() => {
-    if (input !== "camera" || !cameraReady || modal === "camera") return;
+    if (
+      input !== "camera" ||
+      !cameraReady ||
+      cameraActivation !== "gesture" ||
+      modal === "camera"
+    )
+      return;
     const engine = new IntentEngine({
       sigma: 0.025,
       minimumMargin: 0.12,
@@ -404,6 +485,7 @@ export default function App() {
   }, [
     input,
     cameraReady,
+    cameraActivation,
     paused,
     modal,
     prefs.dwellMs,
@@ -411,11 +493,13 @@ export default function App() {
     selected,
   ]);
   const onObservation = useCallback((o: Observation) => {
+    learningRef.current.observeGaze(o);
     setCameraObs(o);
     setCameraTracking(o.quality >= 0.5);
     if (
       o.gesture &&
       inputRef.current === "camera" &&
+      cameraActivationRef.current === "gesture" &&
       modalRef.current !== "camera" &&
       o.quality >= 0.5 &&
       performance.now() - lastInput.current > 900
@@ -442,7 +526,14 @@ export default function App() {
   useEffect(() => {
     const lost = () => {
       if (document.hidden) {
+        requestEpoch.current++;
+        requestPending.current = false;
+        learningRef.current.invalidate();
+        selectedDecision.current = null;
+        customDecision.current = null;
         setPaused(true);
+        setBusy(false);
+        setSelected(null);
         setScanId("");
         void api.stop().catch(() => {});
       }
@@ -457,6 +548,9 @@ export default function App() {
     [],
   );
   const start = async (mode: "practice" | "astra") => {
+    intentLearning.invalidate();
+    selectedDecision.current = null;
+    customDecision.current = null;
     setModal(null);
     setPaused(false);
     setSelected(null);
@@ -467,36 +561,76 @@ export default function App() {
       api.session(mode, mode === "astra" && consent, url || undefined),
     );
   };
-  const suggestions = async () => {
+  const suggestions = async (attentionPoint?: Point | null) => {
     if (!state.screenshot || busy || paused) return;
+    const epoch = ++requestEpoch.current;
+    requestPending.current = true;
+    intentLearning.invalidate();
+    selectedDecision.current = null;
     setBusy(true);
     setError("");
     try {
-      const r = await api.candidates(focus || undefined);
+      const r = await api.candidates(
+        attentionPoint === null
+          ? undefined
+          : (attentionPoint ?? focus ?? undefined),
+      );
+      if (
+        epoch !== requestEpoch.current ||
+        pausedRef.current ||
+        r.state.revision < stateRef.current.revision
+      )
+        return;
+      setState(r.state);
       setCandidates(r.candidates);
+      setCandidatesRevision(r.state.revision);
       setSource(r.source);
       setSelected(null);
     } catch (e) {
+      if (epoch !== requestEpoch.current) return;
       setError(e instanceof Error ? e.message : "Could not read this screen.");
     } finally {
-      setBusy(false);
+      if (epoch === requestEpoch.current) {
+        requestPending.current = false;
+        setBusy(false);
+      }
     }
   };
   const choose = (c: Candidate) => {
+    if (!canAct || !currentCandidates) return;
+    selectedDecision.current = {
+      revision: state.revision,
+      id: c.id,
+      snapshot: intentLearning.snapshot,
+    };
     setSelected(c.id);
     speak(`${c.label}. Select Confirm intent to continue.`);
   };
   const confirmIntent = async () => {
     const c = candidates.find((c) => c.id === selected);
-    if (!c) return;
+    const decision = selectedDecision.current;
+    if (!c || !canAct || !decision) return;
+    if (
+      decision.revision !== stateRef.current.revision ||
+      decision.id !== c.id
+    ) {
+      setSelected(null);
+      selectedDecision.current = null;
+      setError(
+        "The screen changed. Read it again and choose a current intent.",
+      );
+      return;
+    }
+    selectedDecision.current = null;
     setSelected(null);
-    await perform(() => api.intent(c.goal));
+    await perform(
+      () => api.intent(c.goal, decision.revision),
+      undefined,
+      () => {
+        intentLearning.record(decision.snapshot, c.id, "confirm");
+      },
+    );
   };
-  const working = state.status === "thinking" || state.status === "executing",
-    started = !!state.screenshot,
-    proposal = state.proposal,
-    choice = candidates.find((c) => c.id === selected),
-    canAct = started && !busy && !working && !paused && !proposal;
   const modeChange = (m: InputMode) => {
     if (m !== "camera" && input === "camera") {
       cameraStop.current?.();
@@ -553,7 +687,7 @@ export default function App() {
       <a className="skip-link" href="#main">
         Skip to workspace
       </a>
-      <header className="topbar">
+      <header className="topbar" inert={eyesOnly && !modal}>
         <a href="#main" className="wordmark" aria-label="Nerve home">
           <span className="brand-mark">
             <i />
@@ -586,7 +720,7 @@ export default function App() {
           <span className="avatar">m</span>
         </div>
       </header>
-      <main id="main" className="main">
+      <main id="main" className="main" inert={eyesOnly && !modal}>
         <section className="intro">
           <div>
             <div className="eyebrow">
@@ -875,9 +1009,13 @@ export default function App() {
                   is highlighted. <kbd>Esc</kbd> stops everything.
                 </>
               ) : cameraReady ? (
-                "Look at a control to highlight it. Make your calibrated gesture to select. Gaze alone never clicks."
+                cameraActivation === "dwell" ? (
+                  "Use the large eyes-only controls. Look at the center between choices, then hold on your choice."
+                ) : (
+                  "Look at a control to highlight it. Make your calibrated gesture to select."
+                )
               ) : (
-                "Calibrate your gaze and a deliberate gesture. Pointer and single-switch input always remain available."
+                "Set up your gaze once, then use eyes-only controls. Saved calibration gets checked when you return."
               )}
               {input === "camera" && (
                 <button
@@ -986,7 +1124,10 @@ export default function App() {
                   <button
                     className="secondary full"
                     data-scan-id="back"
-                    onClick={() => setSelected(null)}
+                    onClick={() => {
+                      selectedDecision.current = null;
+                      setSelected(null);
+                    }}
                   >
                     Choose something else
                   </button>
@@ -1002,7 +1143,11 @@ export default function App() {
                           key={c.id}
                           className="candidate"
                           data-scan-id={`intent-${i}`}
-                          disabled={!canAct}
+                          data-intent-id={c.id}
+                          disabled={!canAct || !currentCandidates}
+                          onPointerMove={(event) =>
+                            intentLearning.observePointer(c.id, event)
+                          }
                           onClick={() => choose(c)}
                         >
                           <span className="candidate-icon">
@@ -1021,7 +1166,13 @@ export default function App() {
                     className="other-intent"
                     data-scan-id="custom"
                     disabled={!canAct}
-                    onClick={() => setModal("custom")}
+                    onClick={() => {
+                      customDecision.current = {
+                        revision: state.revision,
+                        snapshot: intentLearning.snapshot,
+                      };
+                      setModal("custom");
+                    }}
                   >
                     <Plus size={16} />
                     Something else
@@ -1032,6 +1183,12 @@ export default function App() {
                       ? "Suggestions from Astra, not a reading of your mind."
                       : "Practice suggestions. You decide what fits."}
                   </div>
+                  {!currentCandidates && (
+                    <p className="candidate-source">
+                      The screen changed. Read this screen for current
+                      suggestions.
+                    </p>
+                  )}
                   <button
                     className="secondary full"
                     data-scan-id="suggest"
@@ -1047,6 +1204,11 @@ export default function App() {
                   </button>
                 </>
               )}
+              <IntentLearningStatus
+                learning={intentLearning}
+                candidates={candidates}
+                onOpen={() => setModal("intent-learning")}
+              />
             </section>
             <section className="signal-card">
               <div className="signal-head">
@@ -1177,12 +1339,13 @@ export default function App() {
           </div>
         </footer>
         <div className="fineprint">
-          <span>Built for agency, not mind reading.</span>
+          <span>Your intent, with less effort.</span>
           <span>Research prototype · Not a medical device</span>
         </div>
       </main>
       {input === "camera" &&
         cameraReady &&
+        cameraActivation === "gesture" &&
         cameraTracking &&
         !paused &&
         !modal &&
@@ -1196,22 +1359,104 @@ export default function App() {
             }}
           />
         )}
+      {eyesOnly && (
+        <EyesIntentFlow
+          observation={cameraObs}
+          active={!modal}
+          state={state}
+          candidates={candidates}
+          currentCandidates={currentCandidates}
+          selected={choice}
+          busy={busy}
+          paused={paused}
+          error={error}
+          learning={intentLearning}
+          actionDescriptions={proposal?.actions.map(actionText) ?? []}
+          onChoose={choose}
+          onConfirm={() => void confirmIntent()}
+          onBack={() => {
+            selectedDecision.current = null;
+            setSelected(null);
+          }}
+          onApprove={() => {
+            const current = stateRef.current.proposal;
+            if (
+              !proposal ||
+              !current ||
+              current.id !== proposal.id ||
+              current.revision !== proposal.revision ||
+              requestPending.current ||
+              busy ||
+              pausedRef.current ||
+              Date.now() >= current.expiresAt
+            )
+              return;
+            void perform(() => api.approve(proposal.id, proposal.revision));
+          }}
+          onRefresh={(point) => {
+            setFocus(point ?? null);
+            void suggestions(point ?? null);
+          }}
+          onNone={() => {
+            if (
+              !canAct ||
+              !currentCandidates ||
+              requestPending.current ||
+              state.revision !== stateRef.current.revision
+            )
+              return false;
+            // An explicit rejection labels this slate; passive gaze and Stop never do.
+            if (intentLearning.options.enabled)
+              intentLearning.record(
+                intentLearning.snapshot,
+                NONE_ID,
+                "confirm",
+              );
+            return true;
+          }}
+          onStart={() => void start("practice")}
+          onResume={() => setPaused(false)}
+          onStop={stop}
+          onFinish={() => {
+            stop();
+            modeChange("pointer");
+          }}
+          onRecalibrate={() => setModal("camera")}
+        />
+      )}
       <CameraPanel
         open={modal === "camera"}
         onClose={() => setModal(null)}
         onObservation={onObservation}
         onReady={setCameraReady}
+        onActivationChange={setCameraActivation}
+        onRememberChange={intentLearning.setRemember}
         onStop={(fn) => {
           cameraStop.current = fn;
         }}
         onError={setError}
       />
+      {modal === "intent-learning" && (
+        <IntentLearningDialog
+          learning={intentLearning}
+          candidates={candidates}
+          mode={state.mode}
+          canTeach={canAct && currentCandidates}
+          onClose={() => setModal(null)}
+        />
+      )}
       {modal === "settings" && (
         <Dialog title="Make Nerve yours." onClose={() => setModal(null)}>
           <p className="dialog-intro">
             Comfort isn’t one-size-fits-all. These preferences stay on this
             device.
           </p>
+          <button
+            className="secondary"
+            onClick={() => setModal("intent-learning")}
+          >
+            Intent learning
+          </button>
           <label className="setting">
             <span>
               <strong>Scan interval</strong>
@@ -1289,6 +1534,9 @@ export default function App() {
               className="secondary"
               disabled={busy}
               onClick={() => {
+                intentLearning.invalidate();
+                selectedDecision.current = null;
+                customDecision.current = null;
                 setSelected(null);
                 setPaused(false);
                 void perform(api.reset);
@@ -1393,9 +1641,10 @@ export default function App() {
           </div>
           <p className="dialog-intro">
             Webcam video and eye features stay local. In live mode, browser
-            screenshots, your chosen task, and an optional coarse attention
-            point from pointer or calibrated gaze input are sent to OpenAI. Only
-            use accounts and data you’re comfortable sharing.
+            screenshots, your chosen task, an optional coarse attention point,
+            and any personal background or preferences configured on this device
+            are sent to OpenAI. Only use accounts and data you’re comfortable
+            sharing.
           </p>
           {!state.configured && (
             <div className="warning">
@@ -1426,8 +1675,9 @@ export default function App() {
               onChange={(e) => setConsent(e.target.checked)}
             />
             <span>
-              I consent to sharing this browser’s screenshots, task content, and
-              optional coarse attention point with OpenAI for this session.
+              I consent to sharing this browser’s screenshots, task content,
+              optional coarse attention point, and any configured personal
+              background and preferences with OpenAI for this session.
             </span>
           </label>
           <button
@@ -1454,7 +1704,10 @@ export default function App() {
       {modal === "custom" && (
         <Dialog
           title="What would you like to do?"
-          onClose={() => setModal(null)}
+          onClose={() => {
+            customDecision.current = null;
+            setModal(null);
+          }}
         >
           <p className="dialog-intro">
             A little extra context can help. Nerve will still show each computer
@@ -1473,11 +1726,29 @@ export default function App() {
           </label>
           <button
             className="primary full"
-            disabled={!custom.trim() || busy}
+            disabled={!custom.trim() || !canAct}
             onClick={() => {
+              const decision = customDecision.current;
+              if (
+                !decision ||
+                decision.revision !== stateRef.current.revision
+              ) {
+                setModal(null);
+                setError(
+                  "The screen changed. Read it again before entering an intent.",
+                );
+                return;
+              }
               const goal = custom.trim();
+              customDecision.current = null;
               setModal(null);
-              void perform(() => api.intent(goal));
+              void perform(
+                () => api.intent(goal, decision.revision),
+                undefined,
+                () => {
+                  intentLearning.record(decision.snapshot, NONE_ID, "confirm");
+                },
+              );
             }}
           >
             Use this intent

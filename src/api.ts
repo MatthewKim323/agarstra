@@ -1,4 +1,4 @@
-import type { Candidate, SessionState } from "../shared/types";
+import type { CandidateResponse, SessionState } from "../shared/types";
 export async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api/${path}`, {
     method: body === undefined ? "GET" : "POST",
@@ -18,13 +18,14 @@ export const api = {
   state: () => request<SessionState>("state"),
   session: (mode: "practice" | "astra", screenConsent: boolean, url?: string) =>
     request<SessionState>("session", { mode, screenConsent, url }),
-  intent: (goal: string) => request<SessionState>("intent", { goal }),
+  intent: (goal: string, expectedRevision?: number) =>
+    request<SessionState>("intent", { goal, expectedRevision }),
   approve: (proposalId: string, revision: number) =>
     request<SessionState>("approve", { proposalId, revision }),
   stop: () => request<SessionState>("stop", {}),
   reset: () => request<SessionState>("reset", {}),
   candidates: (point?: { x: number; y: number }) =>
-    request<{ candidates: Candidate[]; source: string }>("candidates", {
+    request<CandidateResponse>("candidates", {
       point,
     }),
 };

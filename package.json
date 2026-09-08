@@ -9,6 +9,7 @@
     "start": "node scripts/start.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "evaluate:intent": "tsx scripts/evaluate-intent.ts",
     "test:e2e": "playwright test",
     "check": "npm test && npm run build && npm run test:e2e && npm audit --audit-level=high",
     "format": "prettier --write src shared server tests docs scripts *.json *.ts index.html README.md .github/workflows/test.yml",

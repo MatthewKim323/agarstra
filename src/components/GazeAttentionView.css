@@ -1,0 +1,139 @@
+.gaze-attention-view {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: #17241d;
+  color: #203b2c;
+  overflow: hidden;
+}
+.gaze-attention-header {
+  position: absolute;
+  inset: 0 0 auto;
+  min-height: 130px;
+  height: 20%;
+  box-sizing: border-box;
+  padding: 16px 24px;
+  background: #f5f7f1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  z-index: 1;
+}
+.gaze-attention-header h1 {
+  font-size: clamp(18px, 2vw, 30px);
+  line-height: 1.15;
+  margin: 0 0 6px;
+}
+.gaze-attention-header > div:first-child {
+  width: 29%;
+}
+.gaze-attention-header p {
+  font-size: clamp(13px, 1.1vw, 17px);
+  margin: 0;
+}
+.gaze-attention-header nav {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
+  width: 29%;
+  justify-content: flex-end;
+}
+.gaze-attention-header button,
+.gaze-attention-fallback button {
+  min-height: 56px;
+  padding: 12px 22px;
+  border: 2px solid #8ba477;
+  border-radius: 12px;
+  background: #edf5df;
+  color: #203b2c;
+  font-size: 17px;
+  font-weight: 700;
+}
+.gaze-attention-stop {
+  position: absolute;
+  z-index: 3;
+  border: 3px solid;
+  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  color: #722818;
+  background: #fff1eb;
+  border-color: #a74836;
+}
+.gaze-attention-stop strong {
+  font-size: clamp(24px, 2.8vw, 44px);
+}
+.gaze-attention-stop span {
+  font-size: clamp(12px, 1.1vw, 18px);
+}
+.gaze-attention-stop i {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 8px;
+  background: #a74836;
+}
+.gaze-attention-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  background: #dce4d3;
+}
+.gaze-attention-progress > span {
+  display: block;
+  height: 100%;
+  background: #4b782f;
+}
+.gaze-attention-screen {
+  position: absolute;
+  top: max(138px, 21%);
+  left: 12px;
+  width: calc(100% - 24px);
+  height: calc(100% - max(138px, 21%) - 12px);
+  object-fit: contain;
+  object-position: center;
+  user-select: none;
+}
+.gaze-attention-fallback {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 2;
+  padding: 14px 20px;
+  border-radius: 14px;
+  color: #203b2c;
+  background: #fffefa;
+  border: 2px solid #8ba477;
+  box-shadow: 0 8px 32px #0003;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.gaze-attention-fallback p {
+  margin: 0;
+  max-width: 40ch;
+}
+@media (max-width: 700px) {
+  .gaze-attention-header {
+    gap: 10px;
+    padding: 10px;
+  }
+  .gaze-attention-header nav {
+    gap: 6px;
+  }
+  .gaze-attention-header button {
+    padding: 8px;
+    font-size: 14px;
+  }
+  .gaze-attention-fallback {
+    width: 90%;
+  }
+}

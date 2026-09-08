@@ -200,7 +200,15 @@ export class NerveSession {
     return this.getState();
   }
 
-  intent(goal: string): SessionState {
+  intent(goal: string, expectedRevision?: number): SessionState {
+    if (
+      expectedRevision !== undefined &&
+      expectedRevision !== this.state.revision
+    )
+      throw new AppError(
+        409,
+        "The screen changed. Read it again and choose a current intent.",
+      );
     this.assertAvailable();
     if (!this.state.screenshot)
       throw new AppError(
@@ -460,7 +468,11 @@ export class NerveSession {
 
   async candidates(
     point?: Point,
-  ): Promise<{ candidates: Candidate[]; source: "practice" | "astra" }> {
+  ): Promise<{
+    candidates: Candidate[];
+    source: "practice" | "astra";
+    state: SessionState;
+  }> {
     this.assertAvailable();
     if (!this.state.screenshot)
       throw new AppError(
@@ -526,6 +538,7 @@ export class NerveSession {
         return {
           candidates: candidates.sort((a, b) => b.probability - a.probability),
           source: "practice",
+          state: this.getState(),
         };
       }
       this.candidateCalls++;
@@ -536,7 +549,7 @@ export class NerveSession {
         controller.signal,
       );
       checkCurrent();
-      return { candidates, source: "astra" };
+      return { candidates, source: "astra", state: this.getState() };
     } finally {
       if (this.candidateController === controller)
         this.candidateController = null;

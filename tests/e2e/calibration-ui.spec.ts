@@ -20,6 +20,14 @@ export class CameraTracker {
   }
   setGesture(config) { this.gesture = config; }
   setGestureKind() {}
+  getEnvironment() {
+    return this.running ? {
+      deviceId: "synthetic-ui-camera", captureWidth: 640, captureHeight: 480,
+      viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio, viewportScale: window.visualViewport?.scale ?? 1,
+      pipelineVersion: "synthetic-ui-v1", featureCount: 18
+    } : null;
+  }
   getDiagnostics() {
     return {
       running: this.running,
@@ -206,6 +214,8 @@ test("real calibration UI waits for Ready, rejects a biased check, and exports o
   await expect(
     page.getByRole("img", { name: /^Gaze check map/ }),
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Eyes only", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Gaze + gesture", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Calibrate gesture", exact: true }),
   ).toBeDisabled();

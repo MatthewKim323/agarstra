@@ -11,11 +11,21 @@ function slowSensor(interval: number, latency: number) {
       setGestureKind() {}
       setGesture() {}
       setCalibration() {}
+      getEnvironment() {
+        return this.running ? {
+          deviceId: "synthetic-slow-camera", captureWidth: 640, captureHeight: 480,
+          viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio, viewportScale: window.visualViewport?.scale ?? 1,
+          pipelineVersion: "synthetic-slow-v1", featureCount: 18
+        } : null;
+      }
       getDiagnostics() {
         return {
           running: this.running, frames: this.frames,
           backend: "synthetic slow sensor", gazeModel: "test fixture",
           inferenceMs: ${latency}, calibrated: false,
+          lastCaptureLatencyMs: this.frames ? ${latency} : null,
+          totalResults: this.frames, staleResults: ${latency} > 450 ? this.frames : 0,
           gestureConfigured: false, gestureArmed: false,
           reason: "Synthetic eye samples, no webcam used."
         };
@@ -27,7 +37,7 @@ function slowSensor(interval: number, latency: number) {
           this.frames++;
           globalThis.__slowEyeSamplesSent = this.frames;
           observe({
-            x: .15, y: .15, quality: 1,
+            x: .15, y: .15, quality: globalThis.__blinkSlowEyeSamples ? 0 : 1,
             timestamp: performance.now() - ${latency},
             gesture: false, gestureStrength: .1,
             features: [.015,.012,-.015,.012,.01,.01,.5,.5,
@@ -125,31 +135,80 @@ for (const { interval, latency } of [
   });
 }
 
-test("fresh deliveries of stale captures never look usable or advance calibration", async ({
+test("a brief blink keeps accepted slow-camera samples and waits for a fresh fixation", async ({
   page,
 }) => {
-  await startSyntheticCalibration(page, 200, 400);
-  await expect(page.locator(".calibration-copy")).toContainText("paused");
-  // Deliver ten high-quality observations while retaining their stale timestamps.
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (window as Window & { __slowEyeSamplesSent?: number })
-            .__slowEyeSamplesSent ?? 0,
-      ),
-    )
-    .toBeGreaterThanOrEqual(10);
-  await expect(page.getByTestId("camera-signal-rate")).toHaveText("0.0 / sec");
-  await expect(page.getByTestId("camera-accepted-samples")).toHaveText("0");
-  await expect(page.getByTestId("camera-signal-state")).toContainText(
-    "No current usable eye observations",
+  await page.clock.install();
+  await startSyntheticCalibration(page, 333, 0);
+  await page.clock.runFor(2100);
+  const accepted = page.getByTestId("camera-accepted-samples");
+  const before = Number(await accepted.innerText());
+  expect(before).toBeGreaterThan(0);
+  expect(before).toBeLessThan(10);
+  await page.evaluate(() => {
+    (
+      window as Window & { __blinkSlowEyeSamples?: boolean }
+    ).__blinkSlowEyeSamples = true;
+  });
+  await page.clock.runFor(333);
+  await expect(page.locator(".calibration-copy")).toContainText(
+    "Tracking paused",
   );
+  await expect(accepted).toHaveText(String(before));
+  await page.evaluate(() => {
+    (
+      window as Window & { __blinkSlowEyeSamples?: boolean }
+    ).__blinkSlowEyeSamples = false;
+  });
+  await page.clock.runFor(1000);
+  await expect(accepted).toHaveText(String(before));
   await expect(page.locator(".calibration-copy")).toContainText("1 of 9");
-  await expect(page.locator(".calibration-target")).toHaveCSS("left", "216px");
+  await page.clock.runFor(4500);
+  await expect(page.locator(".calibration-copy")).toContainText("2 of 9");
   await expect(
-    page.getByRole("button", { name: "Use calibrated input", exact: true }),
+    page.getByRole("button", { name: "Check gaze controls", exact: true }),
   ).toBeHidden();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toBeHidden();
 });
+
+for (const latency of [400, 1200]) {
+  test(`fresh deliveries of ${latency} ms stale captures never look usable or advance calibration`, async ({
+    page,
+  }) => {
+    await startSyntheticCalibration(page, 200, latency);
+    await expect(page.locator(".calibration-copy")).toContainText("paused");
+    // Deliver ten high-quality observations while retaining their stale timestamps.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { __slowEyeSamplesSent?: number })
+              .__slowEyeSamplesSent ?? 0,
+        ),
+      )
+      .toBeGreaterThanOrEqual(10);
+    await expect(page.getByTestId("camera-signal-rate")).toHaveText(
+      "0.0 / sec",
+    );
+    await expect(page.getByTestId("camera-accepted-samples")).toHaveText("0");
+    await expect(page.getByTestId("camera-capture-delay")).toHaveText(
+      `${latency} ms`,
+    );
+    await expect(page.getByTestId("camera-stale-results")).toHaveText(
+      latency > 450 ? /^[1-9]\d* \/ [1-9]\d*$/ : /^0 \/ [1-9]\d*$/,
+    );
+    await expect(page.getByTestId("camera-signal-state")).toContainText(
+      "No current usable eye observations",
+    );
+    await expect(page.locator(".calibration-copy")).toContainText("1 of 9");
+    await expect(page.locator(".calibration-target")).toHaveCSS(
+      "left",
+      "216px",
+    );
+    await expect(
+      page.getByRole("button", { name: "Use calibrated input", exact: true }),
+    ).toBeHidden();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toBeHidden();
+  });
+}

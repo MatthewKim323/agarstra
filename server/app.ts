@@ -14,7 +14,10 @@ const sessionSchema = z
   })
   .strict();
 const intentSchema = z
-  .object({ goal: z.string().trim().min(1).max(2000) })
+  .object({
+    goal: z.string().trim().min(1).max(2000),
+    expectedRevision: z.number().int().nonnegative().optional(),
+  })
   .strict();
 const approvalSchema = z
   .object({
@@ -65,9 +68,10 @@ export function createApp(
   app.post("/api/session", async (req, res) =>
     res.json(await session.start(sessionSchema.parse(req.body))),
   );
-  app.post("/api/intent", (req, res) =>
-    res.json(session.intent(intentSchema.parse(req.body).goal)),
-  );
+  app.post("/api/intent", (req, res) => {
+    const data = intentSchema.parse(req.body);
+    res.json(session.intent(data.goal, data.expectedRevision));
+  });
   app.post("/api/approve", (req, res) => {
     const data = approvalSchema.parse(req.body);
     res.json(session.approve(data.proposalId, data.revision));
@@ -101,12 +105,10 @@ export function createApp(
   }
   const errors: ErrorRequestHandler = (error, _req, res, _next) => {
     if (error instanceof z.ZodError || error instanceof SyntaxError) {
-      res
-        .status(400)
-        .json({
-          error:
-            "Invalid request. Check the required fields and their allowed values.",
-        });
+      res.status(400).json({
+        error:
+          "Invalid request. Check the required fields and their allowed values.",
+      });
       return;
     }
     const status =
@@ -115,11 +117,9 @@ export function createApp(
         : error?.type === "entity.too.large"
           ? 413
           : 500;
-    res
-      .status(status)
-      .json({
-        error: status === 413 ? "Request is too large." : publicError(error),
-      });
+    res.status(status).json({
+      error: status === 413 ? "Request is too large." : publicError(error),
+    });
   };
   app.use(errors);
   return { app, session };

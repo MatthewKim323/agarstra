@@ -56,6 +56,7 @@ Open **http://127.0.0.1:4318**. The UI and local bridge are served together. On 
 - Optional camera input: a local pretrained Peekr eye-image CNN plus iris/head and eye-box geometry, personal calibration selected by whole-target cross-validation, independent held-out checks, smoothing, deliberate gesture calibration, hysteresis, and release-to-rearm.
 - Untimed calibration instructions, fixation-aware collection, point-by-point error and jitter maps, and optional numeric diagnostic downloads without camera images or feature vectors.
 - Temporal spatial evidence and ambiguity gating. Gaze only highlights; deliberate input selects. Scores are heuristic, not calibrated probabilities of intent.
+- Personal intent learning from confirmed goals: local context vectors, fresh attention, a changing goal estimate, and separate teaching and evaluation without running tasks.
 - One-use, expiring action approvals tied to the screen revision. A changed screenshot invalidates approval.
 - Always-visible emergency stop, page-hidden stop, stale-input rejection, and cancellation checks between actions.
 - Local preferences, optional spoken choices, higher contrast, larger text, reduced-motion support, and downloadable session logs without video, screenshots, or credentials.
@@ -74,6 +75,16 @@ An optional external starting page must be HTTPS on the default port and resolve
 
 ## Input guide
 
+### Teach Nerve what you mean
+
+Start practice, then open **Intent learning** below the task choices. Choose **Teach without running**, select what you would want on the current screen (or **None of these / just reading**), and choose **Save example**. This teaches the local model without starting a task. Use **Check without learning** to score its earlier prediction without training on that answer.
+
+Normal **Confirm intent** choices also teach it once the bridge accepts the goal. Selecting a different goal after a wrong guess teaches that correction. Looking, backing out, stopping, and execution failures do not label a preference. The live guess combines learned context with brief attention evidence, while card positions stay fixed and action approval stays separate.
+
+The measurements compare predictions saved before selection against your explicit choices and the original suggestion baseline. Practice and Astra models are separate. Learning is session-only by default; **Remember on this device** saves model weights and counts locally. You can pause learning, forget it, or export aggregate measurements. No task text, URLs, camera frames, or gaze recordings enter the saved model. Learned weights are not anonymous data.
+
+Read the [intent research and design](docs/INTENT_RESEARCH.md) and [intent verification](docs/INTENT_VERIFICATION.md). The deterministic synthetic evaluation runs with `npm run evaluate:intent`; it tests learning mechanisms, not human intent accuracy.
+
 ### Pointer
 
 Click inside the screenshot to indicate a region. This **does not click the remote browser**. Choose **Read this screen** for contextual suggestions, select an intent, confirm it, then review the proposed action.
@@ -88,9 +99,15 @@ Select **Camera**, then **Enable camera**. Permission is requested only then. Ch
 
 The camera pipeline builds 18 features: eight iris/head features, two pretrained Peekr outputs, and eight eye-box coordinates. Training-only cross-validation holds out entire training targets to choose among neural, landmark, and combined feature views and linear/quadratic mappings. The five independent check targets never choose or fit the model. This improves the engineering of calibration; it is not a measured human-accuracy claim.
 
-The unchanged acceptance limits are mean error ≤ 0.150 and 95th-percentile error ≤ 0.255 in normalized viewport distance. Both must pass. A failing check leaves gaze actions disabled and shows each target's average estimate, error, and jitter. **Download numeric diagnostics** optionally saves a local summary of model selection, collection counts, and validation results. It contains no video, images, landmarks, raw eye features, or fitted model weights, and nothing is automatically uploaded. Review it before sharing. After gaze passes, choose **Calibrate gesture** and teach one comfortable gesture using separate resting and active samples. Ordinary blinking is not used as a click.
+The unchanged acceptance limits are mean error ≤ 0.150 and 95th-percentile error ≤ 0.255 in normalized viewport distance. Both must pass. A failing check leaves gaze actions disabled and shows each target's average estimate, error, and jitter. **Download numeric diagnostics** optionally saves a local summary of model selection, collection counts, and validation results. It contains no video, images, landmarks, raw eye features, or fitted model weights, and nothing is automatically uploaded. Review it before sharing.
 
-Look at an available control until highlighted, then make the calibrated gesture. Release before selecting again. Looking inside the browser screenshot sets a coarse attention region for **Read this screen**, not a remote click. Camera estimates do not prove intent and can be wrong. Recalibrate after moving the camera, changing posture, or resizing the viewport. Switching away from camera stops capture. Calibration is session-only, not automatically restored from saved preferences.
+**Eyes only** is the default. After the gaze check, **Check gaze controls** verifies the actual large left/right, center, and Stop areas. Then look at the area you want to work on in the full-size workspace. A steady coarse fixation requests suggestions without running an action. Look at the center, then hold on a choice. Each intent confirmation and exact action approval requires a fresh center-to-choice hold. Long action previews have gaze-controlled pages. This surface currently requires a viewport at least 900 by 650 pixels.
+
+Enable **Remember me on this device** to save checked calibration and intent learning locally. On return, **Check saved calibration** runs five independent points against the frozen model instead of repeating its training. Camera or viewport changes invalidate reuse. Stop clears active readiness, while **Finish session** stops the task and camera without deleting saved learning. Normal accepted goals train the intent model; manual intent lessons are optional.
+
+Explicit **None of these** choices also teach the learner. Optional [private personal context](docs/PERSONAL_CONTEXT.md) can inform live suggestions before confirmed examples exist, without being counted as measured training data.
+
+**Gaze + gesture** remains available for those who prefer it and requires separate gesture setup. Ordinary blinking is not a click. These automated checks do not establish real-person gaze accuracy. See the [complete eyes-only flow and pilot requirements](docs/EYES_ONLY.md).
 
 ### Stop
 
