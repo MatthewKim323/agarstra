@@ -64,6 +64,133 @@
 .gesture-instruction > button {
   margin-top: 12px;
 }
+.dialog[open]:has(> .camera-setup-content):not(:has(.calibration-screen)) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dialog:has(> .camera-setup-content) > .dialog-head {
+  flex-shrink: 0;
+}
+.camera-setup-content {
+  min-height: 0;
+  overflow-y: auto;
+  scroll-padding-block: 12px;
+  padding-bottom: 4px;
+}
+.camera-setup-content[hidden],
+.dialog:has(.calibration-screen) > .dialog-head {
+  display: none;
+}
+.dialog:has(> .camera-setup-content):not(:has(.calibration-screen))
+  > .dialog-emergency {
+  position: static;
+  flex-shrink: 0;
+  margin-top: 16px;
+}
+.camera-scan-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 12px;
+  border: 1px solid #d4decb;
+  border-radius: 10px;
+  background: #f7faf3;
+}
+.camera-scan-choice p {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #425934;
+}
+.camera-scan-toggle {
+  flex: 0 0 auto;
+}
+.camera-signal {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #d4decb;
+  border-radius: 10px;
+  background: #f7faf3;
+  color: #34462c;
+  text-align: left;
+}
+.camera-signal-values {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.camera-signal-values > div {
+  min-width: 0;
+}
+.camera-signal-values span {
+  display: block;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.camera-signal-values output {
+  display: block;
+  margin-top: 3px;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.camera-signal p,
+.calibration-copy .camera-signal p {
+  margin: 8px 0 0;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.camera-signal .camera-signal-detail {
+  overflow-wrap: anywhere;
+}
+.camera-signal.compact {
+  margin: 12px auto;
+  padding: 10px;
+}
+.calibration-copy {
+  max-height: min(36vh, 380px);
+  padding: 6px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.calibration-screen > .calibration-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.calibration-screen > .calibration-copy > * {
+  flex-shrink: 0;
+}
+.calibration-screen .calibration-copy h3 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+.calibration-screen .calibration-copy > p,
+.calibration-screen .calibration-copy > span:not(.section-kicker) {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.calibration-screen .calibration-copy .camera-signal.compact {
+  margin: 0;
+}
+.calibration-screen .calibration-copy progress {
+  margin: 0 auto;
+}
+.calibration-copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.calibration-copy-actions button {
+  font-size: 12px;
+  padding-inline: 12px;
+}
 .gaze-ready-card {
   position: absolute;
   left: 50%;
@@ -218,6 +345,10 @@
   margin-top: 16px;
 }
 @media (max-width: 650px) {
+  .camera-scan-choice {
+    align-items: flex-start;
+    flex-direction: column;
+  }
   .gaze-results-layout {
     grid-template-columns: 1fr;
   }

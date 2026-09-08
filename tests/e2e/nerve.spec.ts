@@ -485,6 +485,24 @@ for (const dialogType of ["Settings", "Camera"] as const) {
       .getByRole("button", { name: "Single switch", exact: true })
       .click();
     await page.getByRole("button", { name: dialogType, exact: true }).click();
+    if (dialogType === "Camera") {
+      const optIn = page.getByRole("button", {
+        name: "Enable switch scanning",
+        exact: true,
+      });
+      await expect(optIn).toBeFocused();
+      await expect(page.locator('[data-camera-highlight="true"]')).toHaveCount(
+        0,
+      );
+      // Native Space on the initially focused button is a mouse-free opt-in.
+      await page.keyboard.press("Space");
+      await expect(
+        page.getByRole("button", {
+          name: "Disable switch scanning",
+          exact: true,
+        }),
+      ).toBeVisible();
+    }
     const emergency = page
       .getByRole("dialog")
       .getByRole("button", { name: "Emergency stop", exact: true });
@@ -573,6 +591,46 @@ test("single-switch scanning reaches secondary navigation and modal consent with
     "aria-selected",
     "true",
   );
+});
+
+test("camera switch scanning is off by default and never hijacks native Space until enabled", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Camera", exact: true }).click();
+  const optIn = page.getByRole("button", {
+    name: "Enable switch scanning",
+    exact: true,
+  });
+  await expect(optIn).toBeFocused();
+  await expect(optIn).toHaveAttribute("aria-pressed", "false");
+  await page.waitForTimeout(2100);
+  await expect(page.locator('[data-camera-highlight="true"]')).toHaveCount(0);
+  const enable = page.getByRole("button", {
+    name: "Enable camera",
+    exact: true,
+  });
+  await enable.focus();
+  await page.keyboard.press("Space");
+  await expect(
+    page.getByRole("dialog").getByText(/Camera permission was denied/),
+  ).toBeVisible();
+  await expect(optIn).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator('[data-camera-highlight="true"]')).toHaveCount(0);
+  await optIn.focus();
+  await page.keyboard.press("Space");
+  await expect(
+    page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Emergency stop", exact: true }),
+  ).toHaveAttribute("data-camera-highlight", "true");
+  await page
+    .getByRole("button", { name: "Disable switch scanning", exact: true })
+    .click();
+  await page.waitForTimeout(2100);
+  await expect(page.locator('[data-camera-highlight="true"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await page.getByRole("button", { name: "Camera", exact: true }).click();
+  await expect(optIn).toHaveAttribute("aria-pressed", "false");
 });
 
 test("late and out-of-order state polls cannot restore an approval after Emergency stop", async ({
@@ -851,6 +909,10 @@ test("real local vision runtime initializes on a synthetic camera and releases i
     const accessibility = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
       .analyze();
+    await test.info().attach("axe-real-camera-setup", {
+      body: JSON.stringify(accessibility, null, 2),
+      contentType: "application/json",
+    });
     expect
       .soft(
         accessibility.violations.map((item) => ({
@@ -898,9 +960,22 @@ test("real local vision runtime initializes on a synthetic camera and releases i
     await expect(
       page.getByRole("button", { name: "Cancel calibration", exact: true }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Enable switch scanning", exact: true }),
+    ).toHaveCount(1);
+    await expect(
+      page.getByRole("button", { name: "Stop camera", exact: true }),
+    ).toBeHidden();
+    await expect(
+      page.getByRole("button", { name: "Close dialog", exact: true }),
+    ).toBeHidden();
     const emergency = page
       .getByRole("dialog")
       .getByRole("button", { name: "Emergency stop", exact: true });
+    await expect(page.locator('[data-camera-highlight="true"]')).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "Enable switch scanning", exact: true })
+      .click();
     await expect(emergency).toHaveAttribute("data-camera-highlight", "true");
     const coveredTargets = await emergency.evaluate(
       (element, targets) => {
@@ -928,6 +1003,19 @@ test("real local vision runtime initializes on a synthetic camera and releases i
     expect(stopBox!.y).toBeGreaterThanOrEqual(viewportHeight - 70);
     expect(stopBox!.y + stopBox!.height).toBeLessThanOrEqual(viewportHeight);
     expect(stopBox!.width).toBeLessThanOrEqual(240);
+    const copyBox = await page.locator(".calibration-copy").boundingBox();
+    const instructionBox = await page
+      .getByRole("heading", { name: "Look at the green point.", exact: true })
+      .boundingBox();
+    expect(copyBox).not.toBeNull();
+    expect(instructionBox).not.toBeNull();
+    expect(
+      instructionBox!.y,
+      "Scanner focus must not scroll the calibration heading out of its visible panel.",
+    ).toBeGreaterThanOrEqual(copyBox!.y);
+    expect(instructionBox!.y + instructionBox!.height).toBeLessThanOrEqual(
+      copyBox!.y + copyBox!.height,
+    );
     await page.screenshot({ path: "test-results/nerve-calibration.png" });
     expect(
       await emergency.evaluate((element) => {

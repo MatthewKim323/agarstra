@@ -150,9 +150,16 @@ test("real calibration UI waits for Ready, rejects a biased check, and exports o
   );
   await page.goto("/");
   await page.getByRole("button", { name: "Camera", exact: true }).click();
+  await expect(page.getByTestId("camera-signal-rate")).toHaveText("0.0 / sec");
+  await expect(page.locator('[data-camera-highlight="true"]')).toHaveCount(0);
   await page
     .getByRole("button", { name: "Enable camera", exact: true })
     .click();
+  await expect
+    .poll(async () =>
+      parseFloat(await page.getByTestId("camera-signal-rate").innerText()),
+    )
+    .toBeGreaterThan(0);
   await page
     .getByRole("button", { name: "Calibrate gaze", exact: true })
     .click();
@@ -171,11 +178,14 @@ test("real calibration UI waits for Ready, rejects a biased check, and exports o
   await page.clock.fastForward(30_000);
   await expect(ready).toBeVisible();
   expect((await fixtureState(page)).targetFrames).toBe(0);
+  await expect(page.locator('[data-camera-highlight="true"]')).toHaveCount(0);
   await checkAccessibility(page, "ready");
   await page.screenshot({ path: "test-results/nerve-gaze-ready.png" });
 
   await ready.click();
   await expect(page.locator(".calibration-target")).toHaveCount(1);
+  await expect(page.getByTestId("camera-accepted-samples")).toBeVisible();
+  await expect(page.locator('[data-camera-highlight="true"]')).toHaveCount(0);
   await expect(
     page.getByRole("progressbar", { name: "Current gaze point progress" }),
   ).toBeVisible();
@@ -243,6 +253,10 @@ test("real calibration UI waits for Ready, rejects a biased check, and exports o
   expect(report.validation.targets[0].dispersion).toBeLessThan(0.001);
   expect(report.fit.trainingTargets).toBe(9);
   expect(report.fit.crossValidationError).toBeLessThan(0.05);
+  expect(report.cameraSignal.windowMs).toBe(2000);
+  expect(report.cameraSignal.usableObservations).toBeGreaterThan(140);
+  expect(report.cameraSignal.usablePerSecond).toBeGreaterThan(0);
+  expect(report.cameraSignal.lastUsableArrivalAgeMs).toBeLessThanOrEqual(350);
   for (const property of [
     "features",
     "landmarks",

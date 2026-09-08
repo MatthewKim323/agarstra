@@ -14,11 +14,14 @@ import {
 import type { Observation } from "../../shared/types";
 import { Dialog } from "./Dialog";
 import { CameraTracker } from "../vision/CameraTracker";
+import { NEURAL_FEATURE_COUNT } from "../vision/eye-images";
 import type { GestureKind } from "../vision/gesture";
 import type { CalibrationValidation } from "../vision/calibration";
 import {
   GazeCalibrationSession,
   GestureCalibrationSession,
+  GAZE_SAMPLE_MAX_AGE_MS,
+  GAZE_FRAME_MAX_GAP_MS,
   type GazeCalibrationState,
   type GestureCalibrationState,
 } from "../vision/calibration-session";
@@ -34,6 +37,26 @@ type CameraPanelProps = {
   onReady: (ready: boolean) => void;
   onStop: (stop: () => void) => void;
   onError: (message: string) => void;
+};
+
+type SignalSummary = {
+  windowMs: number;
+  usablePerSecond: number;
+  lastUsableArrivalAgeMs: number | null;
+  meanCaptureDelayMs: number | null;
+  inferenceMs: number;
+  usableObservations: number;
+  backend: string;
+};
+
+const EMPTY_SIGNAL: SignalSummary = {
+  windowMs: 2000,
+  usablePerSecond: 0,
+  lastUsableArrivalAgeMs: null,
+  meanCaptureDelayMs: null,
+  inferenceMs: 0,
+  usableObservations: 0,
+  backend: "off",
 };
 
 /** Camera consent and calibration UI. The video remains mounted across dialog openings. */
@@ -54,6 +77,12 @@ export function CameraPanel(props: CameraPanelProps) {
   const gazePassedRef = useRef(false);
   const stopRef = useRef<() => void>(() => {});
   const viewport = useRef({ width: 0, height: 0 });
+  const switchOptIn = useRef<HTMLButtonElement>(null);
+  const signalSamples = useRef<{ capture: number; arrival: number }[]>([]);
+  const lastUsableCapture = useRef(-Infinity);
+  const lastUsableArrival = useRef(-Infinity);
+  const usableObservations = useRef(0);
+  const latestSignalUsable = useRef(false);
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -69,10 +98,62 @@ export function CameraPanel(props: CameraPanelProps) {
   const [gestureState, setGestureState] =
     useState<GestureCalibrationState | null>(null);
   const [scanId, setScanId] = useState("");
-  const [diagnosticReport, setDiagnosticReport] = useState<ReturnType<
-    GazeCalibrationSession["diagnosticReport"]
-  > | null>(null);
+  const [switchScanning, setSwitchScanning] = useState(false);
+  const [signal, setSignal] = useState<SignalSummary>(EMPTY_SIGNAL);
+  const [diagnosticReport, setDiagnosticReport] = useState<
+    | (ReturnType<GazeCalibrationSession["diagnosticReport"]> & {
+        cameraSignal: SignalSummary;
+      })
+    | null
+  >(null);
   const scanRef = useRef("");
+
+  const readSignal = useCallback((now: number): SignalSummary => {
+    signalSamples.current = signalSamples.current.filter(
+      (sample) => now - sample.arrival <= 2000 && now >= sample.arrival,
+    );
+    const age = Number.isFinite(lastUsableArrival.current)
+      ? Math.max(0, now - lastUsableArrival.current)
+      : null;
+    const available =
+      latestSignalUsable.current &&
+      age !== null &&
+      age <= GAZE_FRAME_MAX_GAP_MS;
+    const diagnostics = tracker.current?.getDiagnostics();
+    const recent = signalSamples.current;
+    return {
+      windowMs: 2000,
+      usablePerSecond: available
+        ? Math.round((recent.length / 2) * 10) / 10
+        : 0,
+      lastUsableArrivalAgeMs: age === null ? null : Math.round(age),
+      meanCaptureDelayMs: recent.length
+        ? Math.round(
+            recent.reduce(
+              (sum, sample) => sum + sample.arrival - sample.capture,
+              0,
+            ) / recent.length,
+          )
+        : null,
+      inferenceMs: Number.isFinite(diagnostics?.inferenceMs)
+        ? Math.round(diagnostics!.inferenceMs)
+        : 0,
+      usableObservations: usableObservations.current,
+      backend: diagnostics?.backend ?? "off",
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!open) {
+      setSwitchScanning(false);
+      return;
+    }
+    switchOptIn.current?.focus({ preventScroll: true });
+    const refresh = () => setSignal(readSignal(performance.now()));
+    refresh();
+    const signalTimer = setInterval(refresh, 200);
+    return () => clearInterval(signalTimer);
+  }, [open, readSignal]);
 
   const clearSession = useCallback(() => {
     if (timer.current) clearInterval(timer.current);
@@ -109,6 +190,10 @@ export function CameraPanel(props: CameraPanelProps) {
     tracker.current = null;
     current?.stop();
     latest.current = null;
+    signalSamples.current = [];
+    lastUsableCapture.current = lastUsableArrival.current = -Infinity;
+    usableObservations.current = 0;
+    latestSignalUsable.current = false;
     if (mounted.current)
       callbacks.current.onObservation({
         x: 0.5,
@@ -124,6 +209,7 @@ export function CameraPanel(props: CameraPanelProps) {
       setBusy(false);
       setQuality(0);
       setFaceStatus("Camera is off.");
+      setSignal(EMPTY_SIGNAL);
     }
     const preview = canvas.current;
     if (preview)
@@ -199,6 +285,36 @@ export function CameraPanel(props: CameraPanelProps) {
         (observation) => {
           if (generation.current !== token || !mounted.current) return;
           latest.current = observation;
+          const arrival = performance.now();
+          const valid =
+            Number.isFinite(observation.timestamp) &&
+            Number.isFinite(observation.quality) &&
+            observation.quality >= 0.5 &&
+            observation.quality <= 1 &&
+            observation.features.length === NEURAL_FEATURE_COUNT &&
+            observation.features.every(Number.isFinite);
+          if (!valid) latestSignalUsable.current = false;
+          else if (observation.timestamp > lastUsableCapture.current) {
+            const age = arrival - observation.timestamp;
+            latestSignalUsable.current =
+              age >= -50 && age <= GAZE_SAMPLE_MAX_AGE_MS;
+            if (latestSignalUsable.current) {
+              lastUsableCapture.current = observation.timestamp;
+              lastUsableArrival.current = arrival;
+              usableObservations.current++;
+              signalSamples.current = [
+                ...signalSamples.current,
+                { capture: observation.timestamp, arrival },
+              ]
+                .filter((sample) => arrival - sample.arrival <= 2000)
+                .slice(-120);
+            }
+          }
+          // Admit each capture at its actual arrival. Waiting for the UI timer
+          // can make an otherwise fresh, slow inference cross the age limit.
+          const calibration = active.current;
+          if (calibration?.kind === "gaze")
+            calibration.session.update(observation, arrival);
           setQuality(observation.quality);
           setFaceStatus(t.getDiagnostics().reason);
           const preview = canvas.current;
@@ -267,7 +383,10 @@ export function CameraPanel(props: CameraPanelProps) {
       clearSession();
       setGazeState(null);
       setValidation(state.validation);
-      setDiagnosticReport(session.diagnosticReport(viewport.current));
+      setDiagnosticReport({
+        ...session.diagnosticReport(viewport.current),
+        cameraSignal: readSignal(performance.now()),
+      });
       const passed = Boolean(session.model && state.validation?.passed);
       tracker.current?.setCalibration(passed ? session.model : null);
       gazePassedRef.current = passed;
@@ -331,12 +450,16 @@ export function CameraPanel(props: CameraPanelProps) {
     }, 70);
   };
 
-  // An existing switch can navigate setup before camera input is calibrated.
-  // Tab/Enter remain native. Space selects the currently highlighted setup control.
+  // Scanning is explicit opt-in. While off, Space retains native button behavior.
   useEffect(() => {
-    if (!open) {
+    const clearHighlights = () =>
+      document
+        .querySelectorAll("[data-camera-highlight]")
+        .forEach((item) => item.removeAttribute("data-camera-highlight"));
+    if (!open || !switchScanning) {
       setScanId("");
       scanRef.current = "";
+      clearHighlights();
       return;
     }
     let index = 0;
@@ -353,6 +476,7 @@ export function CameraPanel(props: CameraPanelProps) {
               [
                 "cancel",
                 "emergency-stop",
+                "scan-toggle",
                 ...(gazeState.phase === "ready" ? ["gaze-ready"] : []),
               ].includes(button.dataset.cameraScan ?? "")),
         )
@@ -397,9 +521,11 @@ export function CameraPanel(props: CameraPanelProps) {
     return () => {
       clearInterval(scanTimer);
       window.removeEventListener("keydown", key, true);
+      clearHighlights();
     };
   }, [
     open,
+    switchScanning,
     running,
     busy,
     Boolean(gazeState),
@@ -411,8 +537,83 @@ export function CameraPanel(props: CameraPanelProps) {
 
   const scanning = (id: string) => ({
     "data-camera-scan": id,
-    "data-camera-highlight": scanId === id ? "true" : undefined,
+    "data-camera-highlight":
+      switchScanning && scanId === id ? "true" : undefined,
   });
+
+  const switchToggle = (initialFocus = false) => (
+    <button
+      {...scanning("scan-toggle")}
+      className="secondary camera-scan-toggle"
+      ref={initialFocus ? switchOptIn : undefined}
+      autoFocus={initialFocus}
+      aria-pressed={switchScanning}
+      onClick={() => setSwitchScanning((enabled) => !enabled)}
+    >
+      {switchScanning ? "Disable switch scanning" : "Enable switch scanning"}
+    </button>
+  );
+
+  const signalReadout = (compact = false) => (
+    <div
+      className={`camera-signal ${compact ? "compact" : ""}`}
+      role="group"
+      aria-label="Live eye signal"
+    >
+      <div className="camera-signal-values">
+        <div>
+          <span>Usable eye observations</span>
+          <output
+            aria-live="off"
+            aria-label="Usable eye sample rate"
+            data-testid="camera-signal-rate"
+          >
+            {signal.usablePerSecond.toFixed(1)} / sec
+          </output>
+        </div>
+        {gazeState && gazeState.phase !== "ready" && (
+          <div>
+            <span>Accepted at this point</span>
+            <output
+              aria-live="off"
+              aria-label="Accepted samples at this target"
+              data-testid="camera-accepted-samples"
+            >
+              {gazeState.samplesAtTarget}
+            </output>
+          </div>
+        )}
+        {!compact && (
+          <div>
+            <span>Model inference</span>
+            <output aria-live="off" aria-label="Gaze model inference duration">
+              {signal.inferenceMs} ms
+            </output>
+          </div>
+        )}
+      </div>
+      <p className="camera-signal-state" data-testid="camera-signal-state">
+        {!running
+          ? busy
+            ? "Camera is starting. No eye observations yet."
+            : "Camera is off."
+          : signal.usablePerSecond > 0
+            ? "Eye observations are arriving. This does not establish gaze accuracy."
+            : "No current usable eye observations. The dot cannot advance without them."}
+      </p>
+      {running && (!compact || gazeState?.phase === "ready") && (
+        <p className="camera-signal-detail">
+          {signal.lastUsableArrivalAgeMs === null
+            ? "No usable eye observation received yet."
+            : `Last usable observation arrived ${signal.lastUsableArrivalAgeMs} ms ago.`}
+          {!compact &&
+            signal.meanCaptureDelayMs !== null &&
+            ` Capture delay ${signal.meanCaptureDelayMs} ms.`}
+          {!compact && ` ${signal.backend}.`}
+        </p>
+      )}
+    </div>
+  );
   const gestureLabel =
     kind === "jawOpen"
       ? "open your mouth gently"
@@ -433,7 +634,20 @@ export function CameraPanel(props: CameraPanelProps) {
       />
       {open && (
         <Dialog title="An input that fits you." wide onClose={close}>
-          <div inert={Boolean(gazeState)}>
+          <div
+            className="camera-setup-content"
+            hidden={Boolean(gazeState)}
+            inert={Boolean(gazeState)}
+            aria-hidden={gazeState ? true : undefined}
+          >
+            <div className="camera-scan-choice">
+              {switchToggle(true)}
+              <p>
+                {switchScanning
+                  ? "Switch scanning is on. Space selects the moving outlined control."
+                  : "Switch scanning is off. Mouse and Tab/Enter work normally. Press Space on this button to enable scanning."}
+              </p>
+            </div>
             <div className="camera-layout">
               <div className="camera-space">
                 <div className="camera-placeholder nerve-camera-preview">
@@ -459,7 +673,7 @@ export function CameraPanel(props: CameraPanelProps) {
                       className={`nerve-face-status ${quality >= 0.5 ? "visible" : ""}`}
                     >
                       {quality >= 0.5
-                        ? "Face landmarks visible"
+                        ? "Face detected; gaze needs a separate check"
                         : "Controls paused"}
                     </span>
                   )}
@@ -473,6 +687,7 @@ export function CameraPanel(props: CameraPanelProps) {
                     {faceStatus}
                   </p>
                 )}
+                {!gazeState && signalReadout()}
               </div>
               <div>
                 <p className="dialog-intro">
@@ -774,10 +989,11 @@ export function CameraPanel(props: CameraPanelProps) {
               </button>
             </div>
             <p className="subtle">
-              Tab and Enter work throughout setup. A single switch mapped to
-              Space selects the outlined control. Closing unfinished setup stops
-              the camera. Recalibrate after changing posture or screen position.
-              This is experimental access, not clinical eye tracking.
+              Tab and Enter work throughout setup. Switch scanning starts only
+              when enabled; then Space selects the outlined control. Closing
+              unfinished setup stops the camera. Recalibrate after changing
+              posture or screen position. This is experimental access, not
+              clinical eye tracking.
             </p>
           </div>
           {gazeState && (
@@ -819,6 +1035,7 @@ export function CameraPanel(props: CameraPanelProps) {
                     an inaccurate setup. You can always use a single switch
                     instead.
                   </p>
+                  {signalReadout(true)}
                   <div className="gaze-ready-actions">
                     <button
                       {...scanning("gaze-ready")}
@@ -835,6 +1052,7 @@ export function CameraPanel(props: CameraPanelProps) {
                     >
                       Cancel calibration
                     </button>
+                    {switchToggle()}
                   </div>
                 </div>
               ) : (
@@ -858,19 +1076,23 @@ export function CameraPanel(props: CameraPanelProps) {
                     {gazeState.message && (
                       <p role="status">{gazeState.message}</p>
                     )}
+                    {signalReadout(true)}
                     <progress
                       aria-label="Current gaze point progress"
                       value={gazeState.progress}
                       max={1}
                     />
-                    <button
-                      {...scanning("cancel")}
-                      className="secondary"
-                      autoFocus
-                      onClick={cancelCalibration}
-                    >
-                      Cancel calibration
-                    </button>
+                    <div className="calibration-copy-actions">
+                      <button
+                        {...scanning("cancel")}
+                        className="secondary"
+                        autoFocus
+                        onClick={cancelCalibration}
+                      >
+                        Cancel calibration
+                      </button>
+                      {switchToggle()}
+                    </div>
                   </div>
                   <div
                     className="calibration-target"
