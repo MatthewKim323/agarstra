@@ -13,7 +13,7 @@ import {
   GAZE_VALIDATION_TARGETS,
 } from "../../src/vision/calibration-session";
 
-const origin = "http://127.0.0.1:4317";
+const origin = process.env.NERVE_E2E_ORIGIN ?? "http://127.0.0.1:4317";
 
 async function state(request: APIRequestContext): Promise<SessionState> {
   const response = await request.get("/api/state");
@@ -1027,7 +1027,35 @@ test("real local vision runtime initializes on a synthetic camera and releases i
         return hit === element || (hit !== null && element.contains(hit));
       }),
     ).toBeTruthy();
-    await page.keyboard.press("Space");
+    // Layout checks can outlast a scanner turn on CI. Select Emergency stop
+    // atomically with its live highlight, through the real Space key handler.
+    await expect
+      .poll(
+        () =>
+          emergency.evaluate((button) => {
+            if (button.getAttribute("data-camera-highlight") !== "true")
+              return false;
+            button.dispatchEvent(
+              new KeyboardEvent("keydown", {
+                key: " ",
+                code: "Space",
+                bubbles: true,
+                cancelable: true,
+              }),
+            );
+            button.dispatchEvent(
+              new KeyboardEvent("keyup", {
+                key: " ",
+                code: "Space",
+                bubbles: true,
+                cancelable: true,
+              }),
+            );
+            return true;
+          }),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
     await expect(page.getByRole("dialog")).toBeHidden();
     await expect
       .poll(() =>
